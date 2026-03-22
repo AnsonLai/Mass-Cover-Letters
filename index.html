@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Application Station</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.css" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">
+          <img src="./assets/logo-quill.svg?v=2026-03-21-3" alt="Application Station logo" class="brand-logo-wide" />
+        </div>
+        <div>
+          <h1><span class="brand-primary">Application</span><span class="brand-secondary">Station</span></h1>
+          <p>Tailor one base letter to many roles</p>
+        </div>
+      </div>
+
+      <div class="top-controls">
+        <div class="split-action">
+          <button id="runSelectedBtn" type="button" class="secondary-btn">Generate</button>
+          <button id="runMenuBtn" type="button" class="secondary-btn split-trigger" aria-haspopup="menu"
+            aria-expanded="false" aria-controls="runMenu">▾</button>
+          <div id="runMenu" class="split-menu" role="menu" hidden>
+            <button id="runAllBtn" type="button" class="split-menu-item" role="menuitem">Generate All</button>
+          </div>
+        </div>
+
+        <div class="split-action">
+          <button id="downloadBtn" type="button" class="secondary-btn">Export</button>
+          <button id="downloadMenuBtn" type="button" class="secondary-btn split-trigger" aria-haspopup="menu"
+            aria-expanded="false" aria-controls="downloadMenu">▾</button>
+          <div id="downloadMenu" class="split-menu" role="menu" hidden>
+            <button id="downloadAllBtn" type="button" class="split-menu-item" role="menuitem">Export All</button>
+          </div>
+        </div>
+
+        <button id="settingsBtn" type="button" class="secondary-btn icon-btn" aria-label="Open settings"
+          title="Settings">⚙</button>
+      </div>
+    </header>
+
+    <main id="workspace" class="workspace">
+      <aside id="sidebar" class="sidebar">
+        <section class="panel-card" id="sourcePanel">
+          <div class="panel-title-wrap">
+            <h2>Source Documents</h2>
+            <span class="muted">.docx only</span>
+          </div>
+
+          <div id="baseDropZone" class="drop-zone">
+            <input id="baseFileInput" type="file" accept=".docx" hidden />
+            <p class="drop-title">Base Cover Letter</p>
+            <p class="drop-sub">Drop or click to upload</p>
+          </div>
+          <p id="baseFileMeta" class="meta-line">No base letter uploaded.</p>
+
+          <div id="resumeDropZone" class="drop-zone compact">
+            <input id="resumeFileInput" type="file" accept=".docx" hidden />
+            <p class="drop-title">Optional Resume</p>
+            <p class="drop-sub">Used for context and tailored output</p>
+          </div>
+          <p id="resumeFileMeta" class="meta-line">No resume uploaded.</p>
+
+          <div id="samplesDropZone" class="drop-zone compact">
+            <input id="sampleFilesInput" type="file" accept=".docx" multiple hidden />
+            <p class="drop-title">Optional Sample Letters</p>
+            <p class="drop-sub">Drop one or more sample cover letters</p>
+          </div>
+          <p id="samplesFileMeta" class="meta-line">No sample letters uploaded.</p>
+          <button id="clearSamplesBtn" type="button" class="secondary-btn mini-btn">Clear Sample Letters</button>
+        </section>
+
+        <section class="panel-card" id="jobInputPanel">
+          <div class="panel-title-wrap">
+            <h2>Add Job</h2>
+          </div>
+
+          <details class="job-meta-details">
+            <summary class="job-meta-summary">Optional Company &amp; Role</summary>
+            <div class="job-meta-fields">
+              <label class="field-label" for="jobCompanyInput">Company (Optional)</label>
+              <input id="jobCompanyInput" type="text" placeholder="Google" />
+
+              <label class="field-label" for="jobRoleInput">Role (Optional)</label>
+              <input id="jobRoleInput" type="text" placeholder="Software Engineer II" />
+            </div>
+          </details>
+
+          <label class="field-label" for="jobDescriptionInput">Job Description</label>
+          <textarea id="jobDescriptionInput" rows="6" placeholder="Paste one job description here"></textarea>
+
+          <button id="addJobBtn" type="button">+ Add Job</button>
+        </section>
+
+        <section class="panel-card list-card">
+          <div class="panel-title-wrap">
+            <h2>Tailored Applications</h2>
+            <span id="queueMeta" class="muted">0 jobs</span>
+          </div>
+          <div id="jobList" class="job-list"></div>
+          <button id="clearApplicationsBtn" type="button" class="secondary-btn mini-btn">Remove Tailored
+            Applications</button>
+        </section>
+      </aside>
+      <div id="sidebarResizeHandle" class="sidebar-resize-handle" role="separator" aria-orientation="vertical"
+        aria-label="Resize sidebar" tabindex="0"></div>
+
+      <section class="main-panel">
+        <div id="statusBanner" class="status-banner" data-level="info">Application Station is ready. Upload a base cover
+          letter, then add jobs.</div>
+
+        <div class="main-header-row">
+          <div>
+            <h2 id="selectedJobTitle">No Job Selected</h2>
+            <p id="selectedJobMeta" class="muted">Add a job description to begin tailoring.</p>
+          </div>
+        </div>
+
+        <section class="preview-card">
+          <div class="preview-head">
+            <div class="preview-head-row preview-head-top">
+              <h3 id="previewTitle">Cover Letter Preview</h3>
+              <div class="preview-type-toggle" role="group" aria-label="Preview document type">
+                <button id="previewCoverLetterBtn" type="button" class="preview-type-btn active">Cover Letter</button>
+                <button id="previewResumeBtn" type="button" class="preview-type-btn">Resume</button>
+              </div>
+            </div>
+            <div class="preview-head-row preview-head-bottom">
+              <p id="previewStatus" class="muted" data-level="info">Application Station preview will appear here.</p>
+              <button id="acceptAllChangesBtn" type="button" class="secondary-btn preview-action-btn">Accept All
+                Changes</button>
+            </div>
+          </div>
+          <div id="previewHost" class="preview-host"></div>
+        </section>
+
+        <section id="recommendationCard" class="recommendation-card" hidden>
+          <div class="recommendation-heading">Application Station AI Recommendation</div>
+          <p id="recommendationText">No recommendation yet.</p>
+        </section>
+      </section>
+    </main>
+  </div>
+  <div id="settingsModal" class="settings-modal" hidden>
+    <div id="settingsBackdrop" class="settings-backdrop"></div>
+    <section class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <header class="settings-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button id="settingsCloseBtn" type="button" class="secondary-btn settings-close-btn"
+          aria-label="Close settings">✕</button>
+      </header>
+
+      <div class="settings-label-row">
+        <label class="field-label" for="apiKeyInput">Gemini API Key</label>
+        <a class="settings-help-link" href="https://youtu.be/RVGbLSVFtIk" target="_blank" rel="noopener noreferrer"
+          aria-label="Watch Gemini API key setup guide (opens in a new tab)"
+          title="How to get your Gemini API key">?</a>
+      </div>
+      <div class="settings-row">
+        <input id="apiKeyInput" type="password" placeholder="Gemini API key" />
+        <button id="saveApiKeyBtn" type="button" class="secondary-btn">Save Key</button>
+      </div>
+
+      <label class="field-label" for="modelSelect">Model</label>
+      <select id="modelSelect" aria-label="Gemini model"></select>
+
+      <label class="field-label">Edit Mode</label>
+      <div class="mode-toggle settings-mode-toggle" role="group" aria-label="Edit mode">
+        <button id="directModeBtn" type="button" class="mode-btn">Direct Edits</button>
+        <button id="trackModeBtn" type="button" class="mode-btn active">Track Changes</button>
+      </div>
+
+      <label class="field-label">Onboarding</label>
+      <button id="onboardingBtn" type="button" class="secondary-btn">Open Quick Start Guide</button>
+
+      <label class="field-label"></label>
+      <div class="settings-support-wrap">
+        <script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js"
+          data-name="bmc-button" data-slug="ansonlai" data-color="#FFDD00" data-emoji="" data-font="Poppins"
+          data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#000000"
+          data-coffee-color="#ffffff"></script>
+      </div>
+    </section>
+  </div>
+  <div id="onboardingModal" class="onboarding-modal" hidden>
+    <div id="onboardingBackdrop" class="onboarding-backdrop"></div>
+    <section class="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle">
+      <header class="onboarding-head">
+        <h2 id="onboardingTitle">Quick Start</h2>
+        <button id="onboardingCloseBtn" type="button" class="secondary-btn onboarding-close-btn"
+          aria-label="Close guide">✕</button>
+      </header>
+
+      <p class="onboarding-intro">Complete these steps once to get from setup to your first tailored application.</p>
+
+      <ul class="onboarding-list">
+        <li id="onboardingStepApi" class="onboarding-item">
+          <span class="onboarding-step-label">1. Save your Gemini API key (auto-validates)</span>
+          <span id="onboardingStepApiStatus" class="onboarding-step-status">Pending</span>
+        </li>
+        <li id="onboardingStepDocs" class="onboarding-item">
+          <span class="onboarding-step-label">2. Upload your base cover letter</span>
+          <span id="onboardingStepDocsStatus" class="onboarding-step-status">Pending</span>
+        </li>
+        <li id="onboardingStepJob" class="onboarding-item">
+          <span class="onboarding-step-label">3. Add one job description</span>
+          <span id="onboardingStepJobStatus" class="onboarding-step-status">Pending</span>
+        </li>
+        <li id="onboardingStepGenerate" class="onboarding-item">
+          <span class="onboarding-step-label">4. Generate your first tailored output</span>
+          <span id="onboardingStepGenerateStatus" class="onboarding-step-status">Pending</span>
+        </li>
+      </ul>
+
+      <p id="onboardingHint" class="muted onboarding-hint"></p>
+
+      <div class="onboarding-actions">
+        <button id="onboardingPrimaryBtn" type="button">Take Me To Next Step</button>
+        <button id="onboardingDismissBtn" type="button" class="secondary-btn">Hide Guide</button>
+      </div>
+    </section>
+  </div>
+  <div id="toastHost" class="toast-host" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script type="module" src="./main.js?v=2026-03-19-2"></script>
+</body>
+
+</html>

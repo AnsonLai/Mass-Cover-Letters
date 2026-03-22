@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wide & Organic Logo Brainstorming</title>
+<style>
+  body {
+    background-color: #faf8f5;
+    color: #4a4036;
+    font-family: 'Inter', system-ui, sans-serif;
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3rem;
+  }
+  .logo-card {
+    background: white;
+    padding: 2rem;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    width: 360px;
+    text-align: center;
+  }
+  .logo-title {
+    font-weight: 600;
+    font-size: 1.1rem;
+  }
+  .logo-desc {
+    font-size: 0.9rem;
+    color: #7a6f65;
+  }
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2rem;
+    justify-content: center;
+  }
+  svg {
+    width: 160px;
+    height: 80px;
+    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .logo-card:hover svg {
+    transform: scale(1.08) translateY(-2px);
+  }
+</style>
+</head>
+<body>
+  <h1>Flowy & Organic Concepts</h1>
+  <div class="grid">
+    <!-- Idea 1: The Sweeping Stream -->
+    <div class="logo-card">
+      <svg viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M10,65 C40,40 100,80 150,35" stroke="#D2B48C" opacity="0.3" stroke-width="12" stroke-linecap="round"/>
+        <path d="M10,50 C40,25 100,65 150,20" stroke="#D2B48C" opacity="0.6" stroke-width="12" stroke-linecap="round"/>
+        <path d="M10,35 C40,10 100,50 150,5" stroke="#8B5A2B" stroke-width="12" stroke-linecap="round"/>
+      </svg>
+      <div class="logo-title">1. The Sweeping Stream</div>
+      <div class="logo-desc">Soft, overlapping horizontal strokes portraying the fluid, organic movement of multiple pages being dispatched.</div>
+    </div>
+
+    <!-- Idea 2: The Continuous Loop -->
+    <div class="logo-card">
+      <svg viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Infinity shape -->
+        <path d="M40,40 C 15,10 70,10 80,40 C 90,70 145,70 145,40 C 145,10 90,10 80,40 C 70,70 15,70 40,40 Z" fill="none" stroke="#D2B48C" stroke-width="6"/>
+        <path d="M40,40 C 15,10 70,10 80,40 C 90,70 145,70 145,40" fill="none" stroke="#8B5A2B" stroke-width="6" stroke-linecap="round"/>
+        <!-- Small dot signifying the source -->
+        <circle cx="145" cy="40" r="4" fill="#8B5A2B"/>
+      </svg>
+      <div class="logo-title">2. The Continuous Loop</div>
+      <div class="logo-desc">An organic infinity ribbon representing an endless, seamless generation of cover letters.</div>
+    </div>
+
+    <!-- Idea 3: The Unrolling Scroll -->
+    <div class="logo-card">
+      <svg viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- The scroll path -->
+        <path d="M40,55 C20,55 20,25 40,25 C60,25 60,65 95,65 C125,65 140,50 150,35" fill="none" stroke="#8B5A2B" stroke-width="10" stroke-linecap="round"/>
+        <!-- Ghosted trailing curves -->
+        <path d="M60,45 C80,65 120,40 140,25" fill="none" stroke="#D2B48C" stroke-width="6" stroke-linecap="round" opacity="0.8"/>
+        <path d="M80,55 C100,75 130,50 140,40" fill="none" stroke="#D2B48C" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+      </svg>
+      <div class="logo-title">3. The Curled Scroll</div>
+      <div class="logo-desc">A playful, curled page that unfurls completely horizontally, feeling graceful and dynamic.</div>
+    </div>
+
+    <!-- Idea 4: The Minimalist Quill & Wave -->
+    <div class="logo-card">
+      <svg viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <g transform="translate(160, 0) scale(-1, 1)">
+          <!-- Stem -->
+          <path d="M10,70 C50,45 90,65 150,25" fill="none" stroke="#8B5A2B" stroke-width="4" stroke-linecap="round"/>
+          <!-- Plume base -->
+          <path d="M30,58 C60,20 120,30 150,25 C110,65 70,75 30,58 Z" fill="#D2B48C" opacity="0.6"/>
+          <!-- Plume highlight -->
+          <path d="M40,51 C60,15 110,25 150,25 C100,10 60,30 40,51 Z" fill="#8B5A2B" opacity="0.8"/>
+        </g>
+      </svg>
+      <div class="logo-title">4. Quill on the Wind (Flipped)</div>
+      <div class="logo-desc">A highly abstracted, horizontal quill feather riding a gentle wave, signifying ease of writing and sending. Flipped right-to-left.</div>
+    </div>
+  </div>
+</body>
+</html>
