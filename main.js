@@ -22,7 +22,7 @@ import {
   ingestDocxFile,
   loadDocxZipFromBlob,
   normalizeAndFilterOperations,
-  renderPreviewFromZip
+  renderPreviewFromBlob
 } from './docx-engine.js';
 import {
   createDocumentStore
@@ -41,6 +41,7 @@ import {
 } from './ui.js';
 
 const AUTHOR_NAME = 'Application Station';
+const RUN_ALL_CONCURRENCY = 2;
 const BASE_SOURCE_KEY = 'base:source';
 const RESUME_SOURCE_KEY = 'resume:source';
 const SAMPLE_SOURCE_KEY_PREFIX = 'sample:source';
@@ -1047,8 +1048,7 @@ async function renderSelectedPreview(refs) {
 
   try {
     refs.previewHost.classList.remove('preview-host-skeleton');
-    const zip = await loadDocxZipFromBlob(previewBlob);
-    await renderPreviewFromZip(zip, refs.previewHost, message => setPreviewStatus(refs, message, 'info'));
+    await renderPreviewFromBlob(previewBlob, refs.previewHost, message => setPreviewStatus(refs, message, 'info'));
 
     const formatOperationsMessage = value => {
       const parsed = Number.parseInt(String(value ?? 0), 10);
@@ -1388,28 +1388,48 @@ async function runJob(job, refs) {
     renderUi(refs);
     setStatusBanner(refs, `Tailoring for ${formatJobDisplayName(job)}...`, 'info');
 
-    const aiOutput = await generateTailoredCoverLetter({
-      apiKey,
-      model: state.promptSettings.model,
-      promptSettings: state.promptSettings,
-      baseLetterText,
-      paragraphs: baseParagraphs,
-      resumeText,
-      sampleLettersText,
-      job,
-      mode: state.editMode,
-      redlineCap: REDLINE_CAP
-    });
+    // Cover letter and resume tailoring are independent network calls — run them together.
+    const [aiOutput, resumeAiOutput] = await Promise.all([
+      generateTailoredCoverLetter({
+        apiKey,
+        model: state.promptSettings.model,
+        promptSettings: state.promptSettings,
+        baseLetterText,
+        paragraphs: baseParagraphs,
+        resumeText,
+        sampleLettersText,
+        job,
+        mode: state.editMode,
+        redlineCap: REDLINE_CAP
+      }),
+      (hasResumeSource && resumeZip)
+        ? generateTailoredResume({
+          apiKey,
+          model: state.promptSettings.model,
+          promptSettings: state.promptSettings,
+          resumeText,
+          paragraphs: resumeParagraphs,
+          baseLetterText,
+          sampleLettersText,
+          job,
+          mode: state.editMode,
+          redlineCap: REDLINE_CAP
+        })
+        : Promise.resolve(null)
+    ]);
 
-    if (!job.company && aiOutput.inferredCompany) {
-      job.company = aiOutput.inferredCompany;
+    // Prefer cover-letter inferences, then fall back to resume inferences.
+    if (!job.company) {
+      job.company = aiOutput.inferredCompany || resumeAiOutput?.inferredCompany || '';
     }
-    if (!job.role && aiOutput.inferredRole) {
-      job.role = aiOutput.inferredRole;
+    if (!job.role) {
+      job.role = aiOutput.inferredRole || resumeAiOutput?.inferredRole || '';
     }
 
-    let coverLetterOperations = normalizeAndFilterOperations(aiOutput.operations);
-    coverLetterOperations = stripCommentOperations(coverLetterOperations);
+    const coverLetterOperations = stripCommentOperations(normalizeAndFilterOperations(aiOutput.operations));
+    const resumeOperations = resumeAiOutput
+      ? stripCommentOperations(normalizeAndFilterOperations(resumeAiOutput.operations))
+      : [];
 
     job.status = 'applying';
     renderUi(refs);
@@ -1432,56 +1452,22 @@ async function runJob(job, refs) {
       });
     }
 
-    let resumeAiOutput = null;
-    let resumeOperations = [];
     let resumeOperationResults = [];
-
-    if (hasResumeSource && resumeZip) {
-      job.status = 'tailoring';
-      renderUi(refs);
-      setStatusBanner(refs, `Tailoring resume for ${formatJobDisplayName(job)}...`, 'info');
-
-      resumeAiOutput = await generateTailoredResume({
-        apiKey,
-        model: state.promptSettings.model,
-        promptSettings: state.promptSettings,
-        resumeText,
-        paragraphs: resumeParagraphs,
-        baseLetterText,
-        sampleLettersText,
-        job,
-        mode: state.editMode,
-        redlineCap: REDLINE_CAP
+    if (resumeOperations.length > 0 && resumeZip) {
+      resumeOperationResults = await applyOperationsInBatches({
+        zip: resumeZip,
+        operations: resumeOperations,
+        author: AUTHOR_NAME,
+        batchSize: OPERATION_BATCH_SIZE,
+        generateRedlines: state.editMode === 'track',
+        onProgress: progress => {
+          setStatusBanner(
+            refs,
+            `Applying resume edits for ${formatJobDisplayName(job)} (${progress.completed}/${progress.totalOperations})...`,
+            'info'
+          );
+        }
       });
-
-      if (!job.company && resumeAiOutput.inferredCompany) {
-        job.company = resumeAiOutput.inferredCompany;
-      }
-      if (!job.role && resumeAiOutput.inferredRole) {
-        job.role = resumeAiOutput.inferredRole;
-      }
-
-      resumeOperations = normalizeAndFilterOperations(resumeAiOutput.operations);
-      resumeOperations = stripCommentOperations(resumeOperations);
-
-      job.status = 'applying';
-      renderUi(refs);
-      if (resumeOperations.length > 0) {
-        resumeOperationResults = await applyOperationsInBatches({
-          zip: resumeZip,
-          operations: resumeOperations,
-          author: AUTHOR_NAME,
-          batchSize: OPERATION_BATCH_SIZE,
-          generateRedlines: state.editMode === 'track',
-          onProgress: progress => {
-            setStatusBanner(
-              refs,
-              `Applying resume edits for ${formatJobDisplayName(job)} (${progress.completed}/${progress.totalOperations})...`,
-              'info'
-            );
-          }
-        });
-      }
     }
 
     job.recommendation = aiOutput.recommendation;
@@ -1560,23 +1546,36 @@ async function runAllJobs(refs) {
   renderUi(refs);
 
   try {
-    let next = getNextRunnableJob(state.jobs);
-    if (!next) {
+    if (!getNextRunnableJob(state.jobs)) {
       for (const job of state.jobs) {
         if (job.status === 'done' || job.status === 'partial' || job.status === 'failed') {
           job.status = 'retry';
         }
       }
-      next = getNextRunnableJob(state.jobs);
     }
 
-    while (next) {
+    // Claim the next runnable job synchronously (no await before the status flip)
+    // so concurrent workers never grab the same job.
+    const claimNextJob = () => {
+      const job = getNextRunnableJob(state.jobs);
+      if (!job) return null;
+      job.status = 'preparing';
       if (!state.selectedJobId) {
-        state.selectedJobId = next.id;
+        state.selectedJobId = job.id;
       }
-      await runJob(next, refs);
-      next = getNextRunnableJob(state.jobs);
-    }
+      return job;
+    };
+
+    const worker = async () => {
+      let job = claimNextJob();
+      while (job) {
+        await runJob(job, refs);
+        job = claimNextJob();
+      }
+    };
+
+    const workerCount = Math.min(RUN_ALL_CONCURRENCY, state.jobs.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
     setStatusBanner(refs, 'Batch generation complete.', 'success');
   } finally {
@@ -1614,17 +1613,18 @@ async function downloadSelectedJob(refs) {
 }
 
 async function downloadAllJobs(refs) {
-  const files = [];
-  for (const job of state.jobs) {
+  const fileGroups = await Promise.all(state.jobs.map(async job => {
     const coverLetterBlob = await state.store.getBlob(job.storage.resultKey);
-    if (!coverLetterBlob) continue;
-    files.push({ name: buildOutputFileName(job), blob: coverLetterBlob });
+    if (!coverLetterBlob) return [];
 
+    const group = [{ name: buildOutputFileName(job), blob: coverLetterBlob }];
     const resumeBlob = await state.store.getBlob(job.storage.resumeResultKey);
     if (resumeBlob) {
-      files.push({ name: buildResumeOutputFileName(job), blob: resumeBlob });
+      group.push({ name: buildResumeOutputFileName(job), blob: resumeBlob });
     }
-  }
+    return group;
+  }));
+  const files = fileGroups.flat();
 
   if (files.length === 0) {
     setStatusBanner(refs, 'No generated letters to export yet.', 'warn');

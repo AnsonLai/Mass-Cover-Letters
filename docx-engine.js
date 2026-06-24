@@ -4,7 +4,7 @@ const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DEFAULT_HIGHLIGHT = 'yellow';
 
 let cachedDepsPromise = null;
-const DOCX_REDLINE_VERSION = '0.1.4';
+const DOCX_REDLINE_VERSION = '0.1.6';
 
 function getLocalName(node) {
   return String(node?.localName || node?.nodeName || '').replace(/^.*:/, '');
@@ -132,7 +132,7 @@ async function tryImportFirst(urls) {
   throw new Error('No import URL candidates provided');
 }
 
-async function loadEngineDependencies(log = () => {}) {
+async function loadEngineDependencies(log = () => { }) {
   if (cachedDepsPromise) return cachedDepsPromise;
 
   cachedDepsPromise = (async () => {
@@ -292,7 +292,6 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
     }
   }
 
-  documentXml = normalizeDocumentXml(documentXml, deps, log);
   zip.file('word/document.xml', documentXml);
 
   if (typeof deps.ensureNumberingArtifactsInZip === 'function' && capturedNumberingXml.length > 0) {
@@ -315,6 +314,18 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
     }
   }
 
+  return results;
+}
+
+// Run the expensive normalize + validate pass once, after every batch is applied,
+// instead of repeating it for each batch.
+async function finalizeDocumentPackage(zip, { log = () => { } } = {}) {
+  const deps = await loadEngineDependencies(log);
+  const documentXml = await zip.file('word/document.xml')?.async('string');
+  if (!documentXml) return;
+
+  zip.file('word/document.xml', normalizeDocumentXml(documentXml, deps, log));
+
   if (typeof deps.validateDocxPackage === 'function') {
     try {
       await deps.validateDocxPackage(zip);
@@ -322,8 +333,6 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
       log(`[WARN] Package validation warning: ${error?.message || String(error)}`);
     }
   }
-
-  return results;
 }
 
 export async function applyOperationsInBatches({
@@ -332,8 +341,8 @@ export async function applyOperationsInBatches({
   author,
   batchSize = 3,
   generateRedlines = true,
-  onProgress = () => {},
-  onLog = () => {}
+  onProgress = () => { },
+  onLog = () => { }
 }) {
   const batches = chunkOperations(operations, batchSize);
   const allResults = [];
@@ -355,6 +364,10 @@ export async function applyOperationsInBatches({
     await new Promise(resolve => setTimeout(resolve, 0));
   }
 
+  if (batches.length > 0) {
+    await finalizeDocumentPackage(zip, { log: onLog });
+  }
+
   return allResults;
 }
 
@@ -362,7 +375,7 @@ export async function acceptAllTrackedChangesInZip({
   zip,
   allAuthors = true,
   author = '',
-  onLog = () => {}
+  onLog = () => { }
 }) {
   if (!zip) throw new Error('Missing document package');
 
@@ -404,15 +417,25 @@ export async function acceptAllTrackedChangesInZip({
   };
 }
 
+const PREVIEW_RENDER_OPTIONS = {
+  inWrapper: true,
+  renderChanges: true,
+  renderComments: false,
+  renderHeaders: true,
+  renderFooters: true,
+  renderFootnotes: true,
+  renderEndnotes: true,
+  breakPages: true,
+  useBase64URL: true
+};
+
 function resolvePreviewRenderer() {
   const globalRenderer = globalThis?.docx?.renderAsync;
   if (typeof globalRenderer === 'function') return globalRenderer.bind(globalThis.docx);
   return null;
 }
 
-export async function renderPreviewFromZip(zip, previewHost, statusCallback = () => {}) {
-  if (!previewHost || !zip) return;
-
+async function resolveRenderAsync() {
   let renderAsync = resolvePreviewRenderer();
   if (!renderAsync) {
     const previewModule = await tryImportFirst([
@@ -424,24 +447,27 @@ export async function renderPreviewFromZip(zip, previewHost, statusCallback = ()
   if (typeof renderAsync !== 'function') {
     throw new Error('docx-preview renderer unavailable');
   }
+  return renderAsync;
+}
 
+async function renderPreviewBuffer(buffer, previewHost, statusCallback) {
+  const renderAsync = await resolveRenderAsync();
   statusCallback('Rendering preview...');
-  const blob = await zip.generateAsync({ type: 'blob' });
-  const buffer = await blob.arrayBuffer();
   previewHost.replaceChildren();
-  await renderAsync(buffer, previewHost, null, {
-    inWrapper: true,
-    renderChanges: true,
-    renderComments: false,
-    renderHeaders: true,
-    renderFooters: true,
-    renderFootnotes: true,
-    renderEndnotes: true,
-    breakPages: true,
-    useBase64URL: true
-  });
-
+  await renderAsync(buffer, previewHost, null, PREVIEW_RENDER_OPTIONS);
   statusCallback('Preview updated');
+}
+
+// Fast path: render straight from a stored .docx blob without an unzip/re-zip round-trip.
+export async function renderPreviewFromBlob(blob, previewHost, statusCallback = () => { }) {
+  if (!previewHost || !blob) return;
+  await renderPreviewBuffer(await blob.arrayBuffer(), previewHost, statusCallback);
+}
+
+export async function renderPreviewFromZip(zip, previewHost, statusCallback = () => { }) {
+  if (!previewHost || !zip) return;
+  const blob = await zip.generateAsync({ type: 'blob' });
+  await renderPreviewBuffer(await blob.arrayBuffer(), previewHost, statusCallback);
 }
 
 export function downloadBlob(blob, filename) {

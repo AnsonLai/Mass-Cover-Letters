@@ -83,3 +83,37 @@ test('validateGeminiApiKey performs a lightweight Gemini API call', async () => 
   assert.equal(capturedMethod, 'GET');
   assert.match(capturedUrl, /\/v1beta\/models\?key=AIza-test-key/i);
 });
+
+test('validateGeminiApiKey retries transient 503 responses before succeeding', async () => {
+  let calls = 0;
+  const fetchFn = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        ok: false,
+        status: 503,
+        headers: { get: () => null },
+        async text() {
+          return 'temporarily unavailable';
+        }
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { models: [{ name: 'models/gemini-2.5-flash' }] };
+      }
+    };
+  };
+
+  const result = await validateGeminiApiKey({
+    apiKey: 'AIza-test-key',
+    model: 'gemini-2.5-flash',
+    fetchFn
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.model, 'gemini-2.5-flash');
+  assert.equal(result.selectedModelAvailable, true);
+});

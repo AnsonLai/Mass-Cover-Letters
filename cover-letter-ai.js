@@ -145,6 +145,59 @@ function buildModelJsonParseError(rawText, context = {}) {
   return error;
 }
 
+const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const DEFAULT_REQUEST_TIMEOUT_MS = 90000;
+const DEFAULT_MAX_ATTEMPTS = 3;
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function computeBackoffMs(attempt, response = null) {
+  const retryAfterRaw = response?.headers?.get?.('retry-after');
+  const retryAfter = Number(retryAfterRaw);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(30000, retryAfter * 1000);
+  }
+  const base = Math.min(8000, 500 * 2 ** (attempt - 1));
+  return base + Math.floor(Math.random() * 250);
+}
+
+async function fetchWithResilience(fetchFn, url, options = {}, {
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS
+} = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const canAbort = typeof AbortController === 'function';
+    const controller = canAbort ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+    try {
+      const response = await fetchFn(url, {
+        ...options,
+        signal: controller ? controller.signal : options.signal
+      });
+
+      if (RETRYABLE_HTTP_STATUS.has(response?.status) && attempt < maxAttempts) {
+        await delay(computeBackoffMs(attempt, response));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error?.name === 'AbortError'
+        ? new Error(`Request timed out after ${timeoutMs}ms`)
+        : error;
+      if (attempt >= maxAttempts) throw lastError;
+      await delay(computeBackoffMs(attempt));
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  throw lastError || new Error('Request failed after retries');
+}
+
 function normalizeOperation(rawOp) {
   const op = rawOp && typeof rawOp === 'object' ? rawOp : {};
   return {
@@ -203,9 +256,9 @@ export async function validateGeminiApiKey({
 
   const resolvedModel = normalizeGeminiModel(model);
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(normalizedKey)}&pageSize=200`;
-  const response = await fetchFn(endpoint, {
+  const response = await fetchWithResilience(fetchFn, endpoint, {
     method: 'GET'
-  });
+  }, { timeoutMs: 30000 });
 
   if (!response.ok) {
     const text = await response.text();
@@ -366,11 +419,11 @@ async function callGeminiGenerateContent({
   systemPrompt,
   userPrompt,
   temperature = 0.35,
-  maxOutputTokens = 24576,
+  maxOutputTokens = 40960,
   fetchFn = fetch
 }) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const response = await fetchFn(endpoint, {
+  const response = await fetchWithResilience(fetchFn, endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -434,39 +487,59 @@ async function generateTailoredDocument({
   fetchFn = fetch
 }) {
   const resolvedModel = normalizeGeminiModel(model);
-  const raw = await callGeminiGenerateContent({
-    stage: `${targetDocumentLabel}-tailoring`,
-    apiKey,
-    model: resolvedModel,
-    systemPrompt: buildSystemPrompt({
-      mode,
-      redlineCap,
-      promptSettings,
-      targetDocumentLabel,
-      todayDateText,
-      shouldUpdateDateLine
-    }),
-    userPrompt: buildUserPrompt({
-      sourceDocumentText,
-      sourceDocumentLabel,
-      paragraphs,
-      secondaryContextLabel,
-      secondaryContextText,
-      sampleLettersText,
-      job,
-      todayDateText
-    }),
-    fetchFn
+  const stage = `${targetDocumentLabel}-tailoring`;
+  const systemPrompt = buildSystemPrompt({
+    mode,
+    redlineCap,
+    promptSettings,
+    targetDocumentLabel,
+    todayDateText,
+    shouldUpdateDateLine
+  });
+  const userPrompt = buildUserPrompt({
+    sourceDocumentText,
+    sourceDocumentLabel,
+    paragraphs,
+    secondaryContextLabel,
+    secondaryContextText,
+    sampleLettersText,
+    job,
+    todayDateText
   });
 
-  return {
-    ...parseTailoringPayload(raw.text, {
-      stage: `${targetDocumentLabel}-tailoring`,
+  // Escalate the output-token budget if the first response is cut off mid-JSON.
+  const outputTokenBudgets = [40960, 65536];
+  let lastError = null;
+
+  for (let attempt = 0; attempt < outputTokenBudgets.length; attempt += 1) {
+    const raw = await callGeminiGenerateContent({
+      stage,
+      apiKey,
       model: resolvedModel,
-      apiDebugInfo: raw.debugInfo
-    }),
-    rawResponse: raw.text
-  };
+      systemPrompt,
+      userPrompt,
+      maxOutputTokens: outputTokenBudgets[attempt],
+      fetchFn
+    });
+
+    try {
+      return {
+        ...parseTailoringPayload(raw.text, {
+          stage,
+          model: resolvedModel,
+          apiDebugInfo: raw.debugInfo
+        }),
+        rawResponse: raw.text
+      };
+    } catch (error) {
+      lastError = error;
+      const looksTruncated = Boolean(error?.debugInfo?.looksTruncated);
+      const canRetry = attempt < outputTokenBudgets.length - 1;
+      if (!looksTruncated || !canRetry) throw error;
+    }
+  }
+
+  throw lastError || new Error('Tailoring failed');
 }
 
 export async function generateTailoredCoverLetter({

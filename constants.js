@@ -21,7 +21,7 @@ export const STORAGE_KEYS = {
 };
 
 export const GEMINI_MODEL_OPTIONS = [
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
   { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' }
 ];
