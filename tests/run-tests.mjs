@@ -8,8 +8,13 @@ import {
 } from '../cover-letter-ai.js';
 import {
   normalizeAndFilterOperations,
-  chunkOperations
+  chunkOperations,
+  describeOperationFailure,
+  summarizeOperationFailures,
+  findOriginalSubstring,
+  reconcileOperationsWithParagraphs
 } from '../docx-engine.js';
+import { DEFAULT_GEMINI_MODEL } from '../constants.js';
 import {
   formatJobDisplayName,
   getStatusLabel
@@ -44,7 +49,7 @@ run('buildUserSettingsPromptBlock returns empty string without guidance', () => 
 });
 
 run('normalizeGeminiModel falls back to default model for unknown values', () => {
-  assert.equal(normalizeGeminiModel('bad-model'), 'gemini-2.5-flash');
+  assert.equal(normalizeGeminiModel('bad-model'), DEFAULT_GEMINI_MODEL);
 });
 
 run('normalizeAndFilterOperations strips paragraph marker prefixes and invalid rows', () => {
@@ -64,6 +69,56 @@ run('chunkOperations splits operation list into fixed-size batches', () => {
   const chunks = chunkOperations([1, 2, 3, 4, 5], 2);
   assert.equal(chunks.length, 3);
   assert.deepEqual(chunks[0], [1, 2]);
+});
+
+run('describeOperationFailure distinguishes engine errors from missing targets', () => {
+  assert.equal(
+    describeOperationFailure({ type: 'redline', targetRef: 4, success: false, error: 'boom' }),
+    'redline on P4: boom'
+  );
+  assert.equal(
+    describeOperationFailure({ type: 'highlight', targetRef: 0, success: false, error: null }),
+    'highlight on unknown paragraph: target text was not found in the document'
+  );
+});
+
+run('summarizeOperationFailures keeps only unsuccessful operations', () => {
+  const failures = summarizeOperationFailures([
+    { type: 'redline', targetRef: 1, success: true },
+    { type: 'redline', targetRef: 2, success: false, error: null }
+  ]);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /redline on P2/);
+});
+
+run('findOriginalSubstring recovers exact text past smart quotes and spacing', () => {
+  const original = 'I’m excited to apply for the role—truly.';
+  // Model echoes straight quote, single space, and a hyphen instead of an em dash.
+  assert.equal(findOriginalSubstring(original, "I'm excited to apply"), 'I’m excited to apply');
+  assert.equal(findOriginalSubstring(original, 'role-truly'), 'role—truly');
+  assert.equal(findOriginalSubstring(original, 'not present'), null);
+});
+
+run('reconcileOperationsWithParagraphs snaps target and substrings to document text', () => {
+  const paragraphs = [{ index: 4, text: 'Led the “Atlas” migration—on time.' }];
+  const [op] = reconcileOperationsWithParagraphs([
+    {
+      type: 'highlight',
+      targetRef: 4,
+      target: 'Led the "Atlas" migration-on time.',
+      textToHighlight: '"Atlas" migration'
+    }
+  ], paragraphs);
+
+  assert.equal(op.target, 'Led the “Atlas” migration—on time.');
+  assert.equal(op.textToHighlight, '“Atlas” migration');
+});
+
+run('reconcileOperationsWithParagraphs leaves operations without a matching paragraph alone', () => {
+  const [op] = reconcileOperationsWithParagraphs([
+    { type: 'redline', targetRef: 9, target: 'untouched', modified: 'x' }
+  ], [{ index: 1, text: 'something else' }]);
+  assert.equal(op.target, 'untouched');
 });
 
 run('formatJobDisplayName and getStatusLabel provide UI labels', () => {

@@ -516,6 +516,22 @@ button:disabled {
   margin-top: 2px;
 }
 
+.settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.settings-checkbox-row input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
 .settings-support-wrap {
   margin-top: 12px;
   min-height: 40px;

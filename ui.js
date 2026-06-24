@@ -34,6 +34,7 @@ export function getUiRefs() {
     modelSelect: getById('modelSelect'),
     directModeBtn: getById('directModeBtn'),
     trackModeBtn: getById('trackModeBtn'),
+    includeCommentsToggle: getById('includeCommentsToggle'),
     runSelectedBtn: getById('runSelectedBtn'),
     runMenuBtn: getById('runMenuBtn'),
     runMenu: getById('runMenu'),
@@ -221,14 +222,31 @@ export function renderSelectedJob(refs, job) {
     return;
   }
 
+  const failedCount = Number(job.failedOperationCount || 0);
+
   refs.selectedJobTitle.textContent = formatJobDisplayName(job);
   refs.selectedJobMeta.textContent = [
     `${job.operationCount || 0} total operation${job.operationCount === 1 ? '' : 's'}`,
     `${job.coverLetterOperationCount || 0} cover letter`,
-    `${job.resumeOperationCount || 0} resume`
+    `${job.resumeOperationCount || 0} resume`,
+    failedCount > 0 ? `${failedCount} not applied` : ''
   ].filter(Boolean).join(' • ');
 
   const recommendation = String(job.recommendation || '').trim();
-  refs.recommendationCard.hidden = !recommendation;
-  refs.recommendationText.textContent = recommendation || '';
+  const failures = Array.isArray(job.failedOperations) ? job.failedOperations.filter(Boolean) : [];
+  const validationError = String(job.validationError || '').trim();
+
+  const lines = [];
+  if (recommendation) lines.push(recommendation);
+  if (failures.length > 0) {
+    lines.push(`⚠ ${failures.length} edit${failures.length === 1 ? '' : 's'} not applied:\n- ${failures.join('\n- ')}`);
+  }
+  if (validationError) {
+    lines.push(`⚠ Validation warning: ${validationError}`);
+  }
+
+  // Preserve the line breaks used above regardless of stylesheet defaults.
+  refs.recommendationText.style.whiteSpace = 'pre-wrap';
+  refs.recommendationCard.hidden = lines.length === 0;
+  refs.recommendationText.textContent = lines.join('\n\n');
 }

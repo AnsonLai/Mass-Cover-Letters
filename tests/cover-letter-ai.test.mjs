@@ -8,6 +8,7 @@ import {
   parseTailoringPayload,
   validateGeminiApiKey
 } from '../cover-letter-ai.js';
+import { DEFAULT_GEMINI_MODEL } from '../constants.js';
 
 test('parseModelJsonObject extracts JSON candidate from fenced response', () => {
   const raw = 'before\n```json\n{"recommendation":"Focus on systems","operations":[]}\n```\nafter';
@@ -49,7 +50,7 @@ test('buildUserSettingsPromptBlock includes voice and extra guidance', () => {
 
 test('normalizeGeminiModel keeps supported values and falls back for unknown values', () => {
   assert.equal(normalizeGeminiModel('gemini-2.5-pro'), 'gemini-2.5-pro');
-  assert.equal(normalizeGeminiModel('unknown'), 'gemini-2.5-flash');
+  assert.equal(normalizeGeminiModel('unknown'), DEFAULT_GEMINI_MODEL);
 });
 
 test('validateGeminiApiKey performs a lightweight Gemini API call', async () => {
@@ -73,11 +74,11 @@ test('validateGeminiApiKey performs a lightweight Gemini API call', async () => 
 
   const result = await validateGeminiApiKey({
     apiKey: 'AIza-test-key',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-pro',
     fetchFn
   });
 
-  assert.equal(result.model, 'gemini-2.5-flash');
+  assert.equal(result.model, 'gemini-2.5-pro');
   assert.equal(result.selectedModelAvailable, true);
   assert.equal(result.availableModelCount, 2);
   assert.equal(capturedMethod, 'GET');
@@ -102,18 +103,18 @@ test('validateGeminiApiKey retries transient 503 responses before succeeding', a
       ok: true,
       status: 200,
       async json() {
-        return { models: [{ name: 'models/gemini-2.5-flash' }] };
+        return { models: [{ name: 'models/gemini-2.5-pro' }] };
       }
     };
   };
 
   const result = await validateGeminiApiKey({
     apiKey: 'AIza-test-key',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-pro',
     fetchFn
   });
 
   assert.equal(calls, 2);
-  assert.equal(result.model, 'gemini-2.5-flash');
+  assert.equal(result.model, 'gemini-2.5-pro');
   assert.equal(result.selectedModelAvailable, true);
 });

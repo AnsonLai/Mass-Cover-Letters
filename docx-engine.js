@@ -100,6 +100,105 @@ export function normalizeAndFilterOperations(rawOperations) {
     });
 }
 
+// Word splits text into runs unpredictably and substitutes typographic characters
+// (smart quotes, en/em dashes, non-breaking spaces). The model is asked to echo "exact"
+// text, but its copy often differs from the document byte-for-byte, so the engine fails to
+// locate it. These helpers reconcile model-provided targets back to the document's real text.
+const TYPOGRAPHIC_REPLACEMENTS = new Map([
+  ['‘', "'"], ['’', "'"], ['‛', "'"], ['′', "'"],
+  ['“', '"'], ['”', '"'], ['‟', '"'], ['″', '"'],
+  ['–', '-'], ['—', '-'], ['−', '-'],
+  [' ', ' '], [' ', ' '], [' ', ' ']
+]);
+
+// Build a whitespace-collapsed, typography-normalized string plus a map from each
+// normalized character back to its original index, so a match can be sliced out verbatim.
+function buildNormalizedIndex(text) {
+  const src = String(text ?? '');
+  let normalized = '';
+  const indexMap = [];
+  let prevWasSpace = false;
+
+  for (let i = 0; i < src.length; i += 1) {
+    let ch = TYPOGRAPHIC_REPLACEMENTS.get(src[i]) ?? src[i];
+    if (/\s/.test(ch)) {
+      if (prevWasSpace) continue;
+      ch = ' ';
+      prevWasSpace = true;
+    } else {
+      prevWasSpace = false;
+    }
+    normalized += ch;
+    indexMap.push(i);
+  }
+
+  return { normalized, indexMap };
+}
+
+export function normalizeForMatch(text) {
+  return buildNormalizedIndex(text).normalized.trim();
+}
+
+// Return the exact original substring of `haystack` that matches `needle` modulo
+// whitespace/typography, or null when there is no confident match.
+export function findOriginalSubstring(haystack, needle) {
+  const wanted = normalizeForMatch(needle);
+  if (!wanted) return null;
+
+  const { normalized, indexMap } = buildNormalizedIndex(haystack);
+  const pos = normalized.indexOf(wanted);
+  if (pos < 0) return null;
+
+  const startOrig = indexMap[pos];
+  const endOrig = indexMap[pos + wanted.length - 1];
+  return String(haystack ?? '').slice(startOrig, endOrig + 1);
+}
+
+// Snap each operation's anchor/substring fields to the document's exact characters using
+// the paragraph map (keyed by P# index). Only repairs when the same paragraph/substring is
+// clearly identified — never relocates an operation to a different paragraph.
+export function reconcileOperationsWithParagraphs(operations, paragraphs) {
+  const byIndex = new Map();
+  for (const paragraph of Array.isArray(paragraphs) ? paragraphs : []) {
+    if (paragraph && Number.isInteger(paragraph.index)) {
+      byIndex.set(paragraph.index, String(paragraph.text ?? ''));
+    }
+  }
+
+  return (Array.isArray(operations) ? operations : []).map(op => {
+    if (!op || typeof op !== 'object') return op;
+
+    const ref = Number.isInteger(op.targetRef) ? op.targetRef : null;
+    const paragraphText = ref != null ? byIndex.get(ref) : undefined;
+    if (!paragraphText) return op;
+
+    const next = { ...op };
+
+    // Anchor on the document's exact paragraph text when the model's target refers to the
+    // same paragraph (one contains the other once normalized); otherwise leave it untouched.
+    const targetRaw = typeof next.target === 'string' ? next.target.trim() : '';
+    if (!targetRaw) {
+      next.target = paragraphText;
+    } else {
+      const normalizedTarget = normalizeForMatch(targetRaw);
+      const normalizedParagraph = normalizeForMatch(paragraphText);
+      if (normalizedTarget && normalizedParagraph
+        && (normalizedParagraph.includes(normalizedTarget) || normalizedTarget.includes(normalizedParagraph))) {
+        next.target = paragraphText;
+      }
+    }
+
+    for (const field of ['textToComment', 'textToHighlight']) {
+      if (typeof next[field] === 'string' && next[field].trim()) {
+        const exact = findOriginalSubstring(paragraphText, next[field]);
+        if (exact) next[field] = exact;
+      }
+    }
+
+    return next;
+  });
+}
+
 export function chunkOperations(items, chunkSize) {
   const input = Array.isArray(items) ? items : [];
   const size = Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : input.length || 1;
@@ -248,22 +347,27 @@ function normalizeDocumentXml(xml, deps, log) {
   return serializer.serializeToString(xmlDoc);
 }
 
-async function applyOperationsBatch(zip, operations, { author, log, generateRedlines = true }) {
-  const deps = await loadEngineDependencies(log);
-  let documentXml = await zip.file('word/document.xml')?.async('string');
-  if (!documentXml) throw new Error('word/document.xml not found');
-
+// Engine state (numbering-ID allocation, list continuity, table-redline dedup) must persist
+// across every operation in a document pass — not reset per batch — or numbered lists and
+// repeated structural edits collide. Built once from the document's initial numbering.xml.
+async function createEngineRuntimeContext(zip, deps) {
   const existingNumberingXml = await zip.file('word/numbering.xml')?.async('string');
   const numberingIdState = typeof deps.createDynamicNumberingIdState === 'function'
     ? deps.createDynamicNumberingIdState(existingNumberingXml || '', { minId: 1, maxPreferred: 32767 })
     : null;
 
-  const runtimeContext = {
+  return {
     numberingIdState,
     listFallbackSharedNumIdByKey: new Map(),
     listFallbackSequenceState: { explicitByNumberingKey: new Map() },
     tableStructuralRedlineKeys: new Set()
   };
+}
+
+async function applyOperationsBatch(zip, operations, { author, log, generateRedlines = true, runtimeContext }) {
+  const deps = await loadEngineDependencies(log);
+  let documentXml = await zip.file('word/document.xml')?.async('string');
+  if (!documentXml) throw new Error('word/document.xml not found');
 
   const capturedNumberingXml = [];
   const capturedCommentsXml = [];
@@ -318,21 +422,46 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
 }
 
 // Run the expensive normalize + validate pass once, after every batch is applied,
-// instead of repeating it for each batch.
+// instead of repeating it for each batch. Returns the validation outcome so callers
+// can decide whether the package is safe to export rather than silently shipping it.
 async function finalizeDocumentPackage(zip, { log = () => { } } = {}) {
   const deps = await loadEngineDependencies(log);
   const documentXml = await zip.file('word/document.xml')?.async('string');
-  if (!documentXml) return;
+  if (!documentXml) return { ok: false, error: 'word/document.xml not found' };
 
   zip.file('word/document.xml', normalizeDocumentXml(documentXml, deps, log));
 
-  if (typeof deps.validateDocxPackage === 'function') {
-    try {
-      await deps.validateDocxPackage(zip);
-    } catch (error) {
-      log(`[WARN] Package validation warning: ${error?.message || String(error)}`);
-    }
+  if (typeof deps.validateDocxPackage !== 'function') {
+    return { ok: true, error: null };
   }
+
+  try {
+    await deps.validateDocxPackage(zip);
+    return { ok: true, error: null };
+  } catch (error) {
+    const message = error?.message || String(error);
+    log(`[WARN] Package validation failed: ${message}`);
+    return { ok: false, error: message };
+  }
+}
+
+// Describe why a single operation did not land, distinguishing engine errors from the
+// common "no change" case where the model's target text was not found in the document.
+export function describeOperationFailure(result) {
+  const ref = Number.isInteger(result?.targetRef) && result.targetRef > 0
+    ? `P${result.targetRef}`
+    : 'unknown paragraph';
+  const type = String(result?.type || 'operation').trim() || 'operation';
+  const reason = result?.error
+    ? String(result.error)
+    : 'target text was not found in the document';
+  return `${type} on ${ref}: ${reason}`;
+}
+
+export function summarizeOperationFailures(results) {
+  return (Array.isArray(results) ? results : [])
+    .filter(result => result && !result.success)
+    .map(describeOperationFailure);
 }
 
 export async function applyOperationsInBatches({
@@ -347,12 +476,16 @@ export async function applyOperationsInBatches({
   const batches = chunkOperations(operations, batchSize);
   const allResults = [];
 
+  const deps = await loadEngineDependencies(onLog);
+  const runtimeContext = await createEngineRuntimeContext(zip, deps);
+
   for (let i = 0; i < batches.length; i += 1) {
     const batch = batches[i];
     const batchResults = await applyOperationsBatch(zip, batch, {
       author,
       log: onLog,
-      generateRedlines
+      generateRedlines,
+      runtimeContext
     });
     allResults.push(...batchResults);
     onProgress({
@@ -364,11 +497,15 @@ export async function applyOperationsInBatches({
     await new Promise(resolve => setTimeout(resolve, 0));
   }
 
-  if (batches.length > 0) {
-    await finalizeDocumentPackage(zip, { log: onLog });
-  }
+  const validation = batches.length > 0
+    ? await finalizeDocumentPackage(zip, { log: onLog })
+    : { ok: true, error: null };
 
-  return allResults;
+  return {
+    results: allResults,
+    validation,
+    failures: summarizeOperationFailures(allResults)
+  };
 }
 
 export async function acceptAllTrackedChangesInZip({

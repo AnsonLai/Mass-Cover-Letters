@@ -22,6 +22,7 @@ import {
   ingestDocxFile,
   loadDocxZipFromBlob,
   normalizeAndFilterOperations,
+  reconcileOperationsWithParagraphs,
   renderPreviewFromBlob
 } from './docx-engine.js';
 import {
@@ -53,6 +54,7 @@ const state = createAppState();
 function createAppState() {
   return {
     editMode: 'track',
+    includeComments: false,
     promptSettings: {
       model: DEFAULT_GEMINI_MODEL,
       voice: '',
@@ -137,6 +139,8 @@ export function createCoverLetterJob({ company, role, description }) {
     resumeOperationCount: 0,
     operationCount: 0,
     failedOperationCount: 0,
+    failedOperations: [],
+    validationError: '',
     runtime: {
       error: null
     },
@@ -263,6 +267,8 @@ function normalizePersistedJob(rawJob) {
     resumeOperationCount: Number(source.resumeOperationCount || 0),
     operationCount: Number(source.operationCount || 0),
     failedOperationCount: Number(source.failedOperationCount || 0),
+    failedOperations: Array.isArray(source.failedOperations) ? source.failedOperations.map(String) : [],
+    validationError: String(source.validationError || ''),
     runtime: {
       error: null
     },
@@ -345,6 +351,23 @@ function getStoredEditMode() {
 function setStoredEditMode(mode) {
   try {
     localStorage.setItem(STORAGE_KEYS.EDIT_MODE, mode === 'track' ? 'track' : 'direct');
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function getStoredIncludeComments() {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.INCLUDE_COMMENTS) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setStoredIncludeComments(value) {
+  try {
+    if (value) localStorage.setItem(STORAGE_KEYS.INCLUDE_COMMENTS, '1');
+    else localStorage.removeItem(STORAGE_KEYS.INCLUDE_COMMENTS);
   } catch {
     // Ignore storage errors.
   }
@@ -885,6 +908,8 @@ async function persistSessionState() {
       resumeOperationCount: Number(job.resumeOperationCount || 0),
       operationCount: Number(job.operationCount || 0),
       failedOperationCount: Number(job.failedOperationCount || 0),
+      failedOperations: Array.isArray(job.failedOperations) ? job.failedOperations.map(String) : [],
+      validationError: String(job.validationError || ''),
       storage: {
         resultKey: String(job?.storage?.resultKey || ''),
         resumeResultKey: String(job?.storage?.resumeResultKey || ''),
@@ -1361,6 +1386,8 @@ async function runJob(job, refs) {
 
   try {
     job.status = 'preparing';
+    job.failedOperations = [];
+    job.validationError = '';
     renderUi(refs);
 
     coverLetterZip = await loadDocxZipFromBlob(baseBlob);
@@ -1426,17 +1453,27 @@ async function runJob(job, refs) {
       job.role = aiOutput.inferredRole || resumeAiOutput?.inferredRole || '';
     }
 
-    const coverLetterOperations = stripCommentOperations(normalizeAndFilterOperations(aiOutput.operations));
+    const prepareOperations = (rawOperations, paragraphs) => {
+      const reconciled = reconcileOperationsWithParagraphs(
+        normalizeAndFilterOperations(rawOperations),
+        paragraphs
+      );
+      return state.includeComments ? reconciled : stripCommentOperations(reconciled);
+    };
+
+    const coverLetterOperations = prepareOperations(aiOutput.operations, baseParagraphs);
     const resumeOperations = resumeAiOutput
-      ? stripCommentOperations(normalizeAndFilterOperations(resumeAiOutput.operations))
+      ? prepareOperations(resumeAiOutput.operations, resumeParagraphs)
       : [];
 
     job.status = 'applying';
     renderUi(refs);
 
-    let coverLetterOperationResults = [];
+    const emptyApply = { results: [], validation: { ok: true, error: null }, failures: [] };
+
+    let coverLetterApply = emptyApply;
     if (coverLetterOperations.length > 0) {
-      coverLetterOperationResults = await applyOperationsInBatches({
+      coverLetterApply = await applyOperationsInBatches({
         zip: coverLetterZip,
         operations: coverLetterOperations,
         author: AUTHOR_NAME,
@@ -1452,9 +1489,9 @@ async function runJob(job, refs) {
       });
     }
 
-    let resumeOperationResults = [];
+    let resumeApply = emptyApply;
     if (resumeOperations.length > 0 && resumeZip) {
-      resumeOperationResults = await applyOperationsInBatches({
+      resumeApply = await applyOperationsInBatches({
         zip: resumeZip,
         operations: resumeOperations,
         author: AUTHOR_NAME,
@@ -1475,29 +1512,49 @@ async function runJob(job, refs) {
     job.resumeOperationCount = resumeOperations.length;
     job.operationCount = job.coverLetterOperationCount + job.resumeOperationCount;
 
-    const totalFailed = coverLetterOperationResults.filter(result => !result.success).length
-      + resumeOperationResults.filter(result => !result.success).length;
-    job.failedOperationCount = totalFailed;
-    job.status = job.failedOperationCount > 0 ? 'partial' : 'done';
+    // Surface which specific edits did not land (engine error or target text not found),
+    // labelled by document so the user can tell what was dropped.
+    const labelFailures = (failures, label) => failures.map(text => `${label}: ${text}`);
+    job.failedOperations = [
+      ...labelFailures(coverLetterApply.failures, 'Cover letter'),
+      ...labelFailures(resumeApply.failures, 'Resume')
+    ];
+    job.failedOperationCount = job.failedOperations.length;
+
+    // A package that fails OOXML validation may be corrupt — never report it as clean.
+    const validationErrors = [
+      coverLetterApply.validation.ok ? null : `Cover letter: ${coverLetterApply.validation.error}`,
+      resumeApply.validation.ok ? null : `Resume: ${resumeApply.validation.error}`
+    ].filter(Boolean);
+    job.validationError = validationErrors.join(' | ');
+
+    job.status = (job.failedOperationCount > 0 || validationErrors.length > 0) ? 'partial' : 'done';
 
     await persistJobResult(job, coverLetterZip, resumeZip, {
       recommendation: aiOutput.recommendation,
       coverLetter: {
         operations: coverLetterOperations,
-        operationResults: coverLetterOperationResults
+        operationResults: coverLetterApply.results,
+        validation: coverLetterApply.validation
       },
       resume: {
         recommendation: resumeAiOutput?.recommendation || '',
         operations: resumeOperations,
-        operationResults: resumeOperationResults
+        operationResults: resumeApply.results,
+        validation: resumeApply.validation
       },
+      failedOperations: job.failedOperations,
+      validationError: job.validationError,
       mode: state.editMode
     });
 
     const statusLevel = job.status === 'partial' ? 'warn' : 'success';
+    const partialNote = validationErrors.length > 0
+      ? ` ${job.failedOperationCount} edit(s) not applied; output may be invalid.`
+      : (job.failedOperationCount > 0 ? ` ${job.failedOperationCount} edit(s) could not be applied.` : '');
     setStatusBanner(
       refs,
-      `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).`,
+      `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).${partialNote}`,
       statusLevel
     );
   } catch (error) {
@@ -1690,6 +1747,8 @@ async function init() {
 
   state.editMode = getStoredEditMode();
   setModeButtons(refs, state.editMode);
+  state.includeComments = getStoredIncludeComments();
+  refs.includeCommentsToggle.checked = state.includeComments;
   state.onboarding.dismissed = getStoredOnboardingDismissed();
   state.onboarding.forcedOpen = false;
 
@@ -1793,6 +1852,18 @@ async function init() {
     setStoredEditMode(state.editMode);
     setModeButtons(refs, state.editMode);
     setStatusBanner(refs, 'Track changes mode enabled.', 'info');
+  });
+
+  refs.includeCommentsToggle.addEventListener('change', () => {
+    state.includeComments = refs.includeCommentsToggle.checked;
+    setStoredIncludeComments(state.includeComments);
+    setStatusBanner(
+      refs,
+      state.includeComments
+        ? 'Reviewer comments will be included in generated documents.'
+        : 'Reviewer comments will be omitted from generated documents.',
+      'info'
+    );
   });
 
   wireDropZone(refs, 'baseDropZone', 'baseFileInput', async files => {
