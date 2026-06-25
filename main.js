@@ -54,6 +54,7 @@ const state = createAppState();
 function createAppState() {
   return {
     editMode: 'track',
+    theme: 'light',
     includeComments: false,
     promptSettings: {
       model: DEFAULT_GEMINI_MODEL,
@@ -354,6 +355,32 @@ function setStoredEditMode(mode) {
   } catch {
     // Ignore storage errors.
   }
+}
+
+function getStoredTheme() {
+  try {
+    const value = localStorage.getItem(STORAGE_KEYS.THEME);
+    return value === 'dark' || value === 'light' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function setStoredTheme(theme) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.THEME, theme === 'dark' ? 'dark' : 'light');
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function applyTheme(refs, theme) {
+  const isDark = theme === 'dark';
+  document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+  refs.themeToggleBtn.textContent = isDark ? '☀' : '🌙';
+  refs.themeToggleBtn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+  refs.themeToggleBtn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+  refs.themeToggleBtn.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
 }
 
 function getStoredIncludeComments() {
@@ -1745,6 +1772,10 @@ async function init() {
   state.promptSettings.model = normalizeGeminiModel(storedPromptSettings.model);
   refs.modelSelect.value = state.promptSettings.model;
 
+  const prefersDark = globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches || false;
+  state.theme = getStoredTheme() || (prefersDark ? 'dark' : 'light');
+  applyTheme(refs, state.theme);
+
   state.editMode = getStoredEditMode();
   setModeButtons(refs, state.editMode);
   state.includeComments = getStoredIncludeComments();
@@ -1768,6 +1799,11 @@ async function init() {
   refs.onboardingBtn.addEventListener('click', () => {
     closeSettingsModal(refs);
     openOnboardingModal(refs, true);
+  });
+  refs.themeToggleBtn.addEventListener('click', () => {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    setStoredTheme(state.theme);
+    applyTheme(refs, state.theme);
   });
   refs.settingsCloseBtn.addEventListener('click', () => {
     closeSettingsModal(refs);

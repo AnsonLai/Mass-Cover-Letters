@@ -16,6 +16,7 @@ export const STORAGE_KEYS = {
   PROMPT_SETTINGS: 'coverLetterAi.promptSettings',
   EDIT_MODE: 'coverLetterAi.editMode',
   INCLUDE_COMMENTS: 'coverLetterAi.includeComments',
+  THEME: 'coverLetterAi.theme',
   API_KEY_VALIDATION: 'coverLetterAi.apiKeyValidation',
   ONBOARDING_DISMISSED: 'coverLetterAi.onboardingDismissed',
   SIDEBAR_WIDTH: 'coverLetterAi.sidebarWidth'

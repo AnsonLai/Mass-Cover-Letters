@@ -25,6 +25,7 @@ export function formatJobDisplayName(job) {
 export function getUiRefs() {
   return {
     onboardingBtn: getById('onboardingBtn'),
+    themeToggleBtn: getById('themeToggleBtn'),
     settingsBtn: getById('settingsBtn'),
     settingsModal: getById('settingsModal'),
     settingsBackdrop: getById('settingsBackdrop'),
@@ -159,8 +160,8 @@ export function renderJobList(refs, jobs, selectedJobId) {
 
   if (rows.length === 0) {
     const empty = document.createElement('p');
-    empty.className = 'muted';
-    empty.textContent = 'No jobs added yet.';
+    empty.className = 'job-list-empty';
+    empty.textContent = 'No jobs yet — add a job description to get started.';
     refs.jobList.appendChild(empty);
     return;
   }

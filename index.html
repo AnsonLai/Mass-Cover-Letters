@@ -4,6 +4,17 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    // Apply the saved (or system) theme before first paint to avoid a flash.
+    (function () {
+      try {
+        var stored = localStorage.getItem('coverLetterAi.theme');
+        var theme = stored || (window.matchMedia
+          && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
   <title>Application Station | AI Cover Letter Generator & Resume Tailoring Tool</title>
   <meta name="description"
     content="Application Station helps job seekers generate tailored cover letters and resumes from DOCX files using AI. Upload one base letter, add job descriptions, and export customized applications faster." />
@@ -77,7 +88,7 @@
       </div>
 
       <div class="top-controls">
-        <div class="split-action">
+        <div class="split-action run-primary">
           <button id="runSelectedBtn" type="button" class="secondary-btn">Generate</button>
           <button id="runMenuBtn" type="button" class="secondary-btn split-trigger" aria-haspopup="menu"
             aria-expanded="false" aria-controls="runMenu">▾</button>
@@ -94,6 +105,9 @@
             <button id="downloadAllBtn" type="button" class="split-menu-item" role="menuitem">Export All</button>
           </div>
         </div>
+
+        <button id="themeToggleBtn" type="button" class="secondary-btn icon-btn" aria-label="Toggle dark mode"
+          aria-pressed="false" title="Toggle dark mode">🌙</button>
 
         <button id="settingsBtn" type="button" class="secondary-btn icon-btn" aria-label="Open settings"
           title="Settings">⚙</button>
