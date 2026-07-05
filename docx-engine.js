@@ -4,7 +4,7 @@ const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DEFAULT_HIGHLIGHT = 'yellow';
 
 let cachedDepsPromise = null;
-const DOCX_REDLINE_VERSION = '0.1.6';
+const DOCX_REDLINE_VERSION = '0.2.0';
 
 function getLocalName(node) {
   return String(node?.localName || node?.nodeName || '').replace(/^.*:/, '');

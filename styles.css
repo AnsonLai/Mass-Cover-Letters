@@ -716,11 +716,49 @@ button:disabled {
   cursor: pointer;
 }
 
-.settings-checkbox-row input {
-  width: 16px;
-  height: 16px;
+.settings-checkbox-row input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
   flex: 0 0 auto;
+  margin: 0;
+  border: 1.5px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
   cursor: pointer;
+  display: grid;
+  place-content: center;
+  transition: background 0.15s var(--ease-standard), border-color 0.15s var(--ease-standard), box-shadow 0.15s var(--ease-standard);
+}
+
+.settings-checkbox-row input[type='checkbox']::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  transform: scale(0);
+  transition: transform 0.12s var(--ease-standard);
+  background: var(--brand-ink);
+  clip-path: polygon(14% 44%, 0 60%, 40% 100%, 100% 18%, 86% 4%, 38% 72%);
+}
+
+.settings-checkbox-row input[type='checkbox']:hover {
+  border-color: var(--brand);
+}
+
+.settings-checkbox-row input[type='checkbox']:checked {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.settings-checkbox-row input[type='checkbox']:checked::before {
+  transform: scale(1);
+}
+
+.settings-checkbox-row input[type='checkbox']:focus-visible {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .settings-support-wrap {
