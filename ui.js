@@ -25,6 +25,12 @@ export function formatJobDisplayName(job) {
 export function getUiRefs() {
   return {
     onboardingBtn: getById('onboardingBtn'),
+    setupChecklistBtn: getById('setupChecklistBtn'),
+    clearAllDataBtn: getById('clearAllDataBtn'),
+    welcomeModal: getById('welcomeModal'),
+    welcomeCloseBtn: getById('welcomeCloseBtn'),
+    welcomeTourBtn: getById('welcomeTourBtn'),
+    welcomeSkipBtn: getById('welcomeSkipBtn'),
     themeToggleBtn: getById('themeToggleBtn'),
     settingsBtn: getById('settingsBtn'),
     settingsModal: getById('settingsModal'),
@@ -32,6 +38,7 @@ export function getUiRefs() {
     settingsCloseBtn: getById('settingsCloseBtn'),
     apiKeyInput: getById('apiKeyInput'),
     saveApiKeyBtn: getById('saveApiKeyBtn'),
+    apiKeyValidationChip: getById('apiKeyValidationChip'),
     modelSelect: getById('modelSelect'),
     directModeBtn: getById('directModeBtn'),
     trackModeBtn: getById('trackModeBtn'),
@@ -69,15 +76,27 @@ export function getUiRefs() {
     statusBanner: getById('statusBanner'),
     selectedJobTitle: getById('selectedJobTitle'),
     selectedJobMeta: getById('selectedJobMeta'),
+    selectedJobDisplay: getById('selectedJobDisplay'),
+    editJobMetaBtn: getById('editJobMetaBtn'),
+    jobMetaEditForm: getById('jobMetaEditForm'),
+    editJobCompanyInput: getById('editJobCompanyInput'),
+    editJobRoleInput: getById('editJobRoleInput'),
+    saveJobMetaBtn: getById('saveJobMetaBtn'),
+    cancelJobMetaBtn: getById('cancelJobMetaBtn'),
     recommendationCard: getById('recommendationCard'),
     recommendationText: getById('recommendationText'),
     previewTitle: getById('previewTitle'),
+    previewModeChip: getById('previewModeChip'),
     previewCoverLetterBtn: getById('previewCoverLetterBtn'),
     previewResumeBtn: getById('previewResumeBtn'),
     acceptAllChangesBtn: getById('acceptAllChangesBtn'),
+    undoAcceptBtn: getById('undoAcceptBtn'),
     previewStatus: getById('previewStatus'),
     previewHost: getById('previewHost'),
     onboardingModal: getById('onboardingModal'),
+    onboardingPillBtn: getById('onboardingPillBtn'),
+    onboardingProgressText: getById('onboardingProgressText'),
+    onboardingTourBtn: getById('onboardingTourBtn'),
     onboardingBackdrop: getById('onboardingBackdrop'),
     onboardingCloseBtn: getById('onboardingCloseBtn'),
     onboardingDismissBtn: getById('onboardingDismissBtn'),
@@ -111,6 +130,37 @@ export function setStatusBanner(refs, message, level = 'info') {
     error: 5000
   };
   showToast(refs, message, level, durationByLevel[level] ?? 2600);
+}
+
+export function showProgressStrip(refs, { label, completed, total } = {}) {
+  const safeTotal = Math.max(1, Number(total || 1));
+  const safeCompleted = Math.max(0, Math.min(safeTotal, Number(completed || 0)));
+  refs.statusBanner.hidden = false;
+  refs.statusBanner.dataset.level = 'info';
+  refs.statusBanner.classList.add('status-progress-strip');
+  refs.statusBanner.innerHTML = '';
+
+  const spinner = document.createElement('span');
+  spinner.className = 'progress-spinner';
+  spinner.setAttribute('aria-hidden', 'true');
+
+  const text = document.createElement('span');
+  text.className = 'progress-strip-label';
+  text.textContent = String(label || 'Working...');
+
+  const bar = document.createElement('span');
+  bar.className = 'progress-strip-bar';
+  const fill = document.createElement('span');
+  fill.style.width = `${Math.round((safeCompleted / safeTotal) * 100)}%`;
+  bar.appendChild(fill);
+
+  refs.statusBanner.append(spinner, text, bar);
+}
+
+export function hideProgressStrip(refs) {
+  refs.statusBanner.classList.remove('status-progress-strip');
+  refs.statusBanner.hidden = true;
+  refs.statusBanner.textContent = '';
 }
 
 export function setPreviewStatus(refs, message, level = 'info') {
@@ -169,6 +219,10 @@ export function renderJobList(refs, jobs, selectedJobId) {
   for (const job of rows) {
     const card = document.createElement('div');
     card.className = 'job-item';
+    const normalizedStatus = String(job.status || 'queued').trim().toLowerCase();
+    if (normalizedStatus === 'failed' && job.recommendation) {
+      card.title = String(job.recommendation);
+    }
 
     const main = document.createElement('button');
     main.type = 'button';
@@ -177,16 +231,22 @@ export function renderJobList(refs, jobs, selectedJobId) {
 
     const title = document.createElement('p');
     title.className = 'job-item-title';
-    title.textContent = String(job.company || 'Company');
+    const company = String(job.company || '').trim();
+    const role = String(job.role || '').trim();
+    const description = String(job.description || '').replace(/\s+/g, ' ').trim();
+    title.textContent = company || role || 'Untitled job';
+    if (!company && !role) title.classList.add('is-placeholder');
     main.appendChild(title);
 
     const sub = document.createElement('p');
     sub.className = 'job-item-sub';
-    sub.textContent = String(job.role || 'Role');
+    sub.textContent = company && role
+      ? role
+      : (!company && !role ? (description.length > 60 ? `${description.slice(0, 57)}...` : description || 'No description yet') : '');
+    if (!company && !role) sub.classList.add('is-placeholder');
     main.appendChild(sub);
 
     const status = document.createElement('p');
-    const normalizedStatus = String(job.status || 'queued').trim().toLowerCase();
     const isCompletedLike = normalizedStatus === 'done' || normalizedStatus === 'partial';
     const statusClass = isCompletedLike ? 'done' : normalizedStatus;
     if (isCompletedLike) card.classList.add('is-complete');
@@ -205,6 +265,15 @@ export function renderJobList(refs, jobs, selectedJobId) {
     removeBtn.textContent = '\u00d7';
 
     card.appendChild(main);
+    if (normalizedStatus === 'failed') {
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'secondary-btn job-item-retry';
+      retryBtn.dataset.jobAction = 'retry';
+      retryBtn.dataset.jobId = job.id;
+      retryBtn.textContent = 'Retry';
+      card.appendChild(retryBtn);
+    }
     card.appendChild(removeBtn);
     refs.jobList.appendChild(card);
   }
@@ -214,8 +283,12 @@ export function setActionEnabled(refs, key, enabled) {
   refs[key].disabled = !enabled;
 }
 
-export function renderSelectedJob(refs, job) {
+export function renderSelectedJob(refs, job, options = {}) {
+  const editing = Boolean(options?.editing);
   if (!job) {
+    refs.selectedJobDisplay.hidden = false;
+    refs.jobMetaEditForm.hidden = true;
+    refs.editJobMetaBtn.hidden = true;
     refs.selectedJobTitle.textContent = 'No Job Selected';
     refs.selectedJobMeta.textContent = 'Add a job description to begin tailoring.';
     refs.recommendationCard.hidden = true;
@@ -224,6 +297,14 @@ export function renderSelectedJob(refs, job) {
   }
 
   const failedCount = Number(job.failedOperationCount || 0);
+
+  refs.editJobMetaBtn.hidden = false;
+  refs.selectedJobDisplay.hidden = editing;
+  refs.jobMetaEditForm.hidden = !editing;
+  if (editing) {
+    refs.editJobCompanyInput.value = String(job.company || '');
+    refs.editJobRoleInput.value = String(job.role || '');
+  }
 
   refs.selectedJobTitle.textContent = formatJobDisplayName(job);
   refs.selectedJobMeta.textContent = [
@@ -250,4 +331,16 @@ export function renderSelectedJob(refs, job) {
   refs.recommendationText.style.whiteSpace = 'pre-wrap';
   refs.recommendationCard.hidden = lines.length === 0;
   refs.recommendationText.textContent = lines.join('\n\n');
+}
+
+export function setPreviewModeChip(refs, job) {
+  const hasResult = Boolean(job && ['done', 'partial'].includes(String(job.status || '')));
+  refs.previewModeChip.hidden = !hasResult;
+  if (!hasResult) {
+    refs.previewModeChip.textContent = '';
+    return;
+  }
+  const isDirect = String(job.generatedMode || 'track') === 'direct';
+  refs.previewModeChip.textContent = isDirect ? 'Direct Edits' : 'Track Changes';
+  refs.previewModeChip.dataset.mode = isDirect ? 'direct' : 'track';
 }

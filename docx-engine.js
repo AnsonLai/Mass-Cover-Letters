@@ -139,6 +139,47 @@ export function normalizeForMatch(text) {
   return buildNormalizedIndex(text).normalized.trim();
 }
 
+function tokenizeForDice(text) {
+  return normalizeForMatch(text)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean);
+}
+
+export function diceSimilarity(a, b) {
+  const leftTokens = tokenizeForDice(a);
+  const rightTokens = tokenizeForDice(b);
+  if (leftTokens.length === 0 && rightTokens.length === 0) return 1;
+  if (leftTokens.length === 0 || rightTokens.length === 0) return 0;
+
+  const toBigrams = tokens => {
+    if (tokens.length === 1) return [tokens[0]];
+    const bigrams = [];
+    for (let i = 0; i < tokens.length - 1; i += 1) {
+      bigrams.push(`${tokens[i]} ${tokens[i + 1]}`);
+    }
+    return bigrams;
+  };
+
+  const left = toBigrams(leftTokens);
+  const right = toBigrams(rightTokens);
+  const rightCounts = new Map();
+  for (const item of right) {
+    rightCounts.set(item, (rightCounts.get(item) || 0) + 1);
+  }
+
+  let overlap = 0;
+  for (const item of left) {
+    const count = rightCounts.get(item) || 0;
+    if (count > 0) {
+      overlap += 1;
+      rightCounts.set(item, count - 1);
+    }
+  }
+
+  return (2 * overlap) / (left.length + right.length);
+}
+
 // Return the exact original substring of `haystack` that matches `needle` modulo
 // whitespace/typography, or null when there is no confident match.
 export function findOriginalSubstring(haystack, needle) {
@@ -157,11 +198,14 @@ export function findOriginalSubstring(haystack, needle) {
 // Snap each operation's anchor/substring fields to the document's exact characters using
 // the paragraph map (keyed by P# index). Only repairs when the same paragraph/substring is
 // clearly identified — never relocates an operation to a different paragraph.
-export function reconcileOperationsWithParagraphs(operations, paragraphs) {
+export function reconcileOperationsWithParagraphs(operations, paragraphs, { onInfo = () => { } } = {}) {
   const byIndex = new Map();
+  const paragraphList = [];
   for (const paragraph of Array.isArray(paragraphs) ? paragraphs : []) {
     if (paragraph && Number.isInteger(paragraph.index)) {
-      byIndex.set(paragraph.index, String(paragraph.text ?? ''));
+      const text = String(paragraph.text ?? '');
+      byIndex.set(paragraph.index, text);
+      paragraphList.push({ index: paragraph.index, text });
     }
   }
 
@@ -169,23 +213,42 @@ export function reconcileOperationsWithParagraphs(operations, paragraphs) {
     if (!op || typeof op !== 'object') return op;
 
     const ref = Number.isInteger(op.targetRef) ? op.targetRef : null;
-    const paragraphText = ref != null ? byIndex.get(ref) : undefined;
-    if (!paragraphText) return op;
-
     const next = { ...op };
+    const targetRaw = typeof next.target === 'string' ? next.target.trim() : '';
+    const normalizedTarget = normalizeForMatch(targetRaw);
+    let paragraphText = ref != null ? byIndex.get(ref) : undefined;
+    let shouldSnapTarget = false;
 
     // Anchor on the document's exact paragraph text when the model's target refers to the
-    // same paragraph (one contains the other once normalized); otherwise leave it untouched.
-    const targetRaw = typeof next.target === 'string' ? next.target.trim() : '';
-    if (!targetRaw) {
-      next.target = paragraphText;
-    } else {
-      const normalizedTarget = normalizeForMatch(targetRaw);
+    // same paragraph (one contains the other once normalized). When that fails, try one
+    // conservative fuzzy re-anchor across all paragraphs.
+    if (paragraphText) {
       const normalizedParagraph = normalizeForMatch(paragraphText);
-      if (normalizedTarget && normalizedParagraph
-        && (normalizedParagraph.includes(normalizedTarget) || normalizedTarget.includes(normalizedParagraph))) {
-        next.target = paragraphText;
+      shouldSnapTarget = !targetRaw
+        || (normalizedTarget && normalizedParagraph
+          && (normalizedParagraph.includes(normalizedTarget) || normalizedTarget.includes(normalizedParagraph)));
+    }
+
+    if (!shouldSnapTarget && normalizedTarget) {
+      const scored = paragraphList
+        .map(paragraph => ({
+          ...paragraph,
+          score: diceSimilarity(normalizedTarget, paragraph.text)
+        }))
+        .sort((a, b) => b.score - a.score);
+      const best = scored[0];
+      const runnerUp = scored[1];
+      if (best && best.score >= 0.82 && best.score - (runnerUp?.score || 0) >= 0.06) {
+        paragraphText = best.text;
+        next.targetRef = best.index;
+        shouldSnapTarget = true;
+        onInfo(`Re-anchored ${String(next.type || 'operation')} target to P${best.index} (similarity ${best.score.toFixed(2)}).`);
       }
+    }
+
+    if (!paragraphText) return op;
+    if (shouldSnapTarget) {
+      next.target = paragraphText;
     }
 
     for (const field of ['textToComment', 'textToHighlight']) {

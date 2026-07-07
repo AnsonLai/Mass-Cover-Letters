@@ -19,6 +19,8 @@ export const STORAGE_KEYS = {
   THEME: 'coverLetterAi.theme',
   API_KEY_VALIDATION: 'coverLetterAi.apiKeyValidation',
   ONBOARDING_DISMISSED: 'coverLetterAi.onboardingDismissed',
+  TOUR_STATE: 'coverLetterAi.tourState',
+  WELCOME_SEEN: 'coverLetterAi.welcomeSeen',
   SIDEBAR_WIDTH: 'coverLetterAi.sidebarWidth'
 };
 

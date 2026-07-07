@@ -3,6 +3,8 @@ import {
   DEFAULT_GEMINI_MODEL,
   GEMINI_MODEL_OPTIONS,
   JOB_STATUS_LABELS,
+  MAX_BASE_LETTER_CHARS,
+  MAX_CONTEXT_CHARS,
   OPERATION_BATCH_SIZE,
   REDLINE_CAP,
   STORAGE_KEYS
@@ -18,6 +20,7 @@ import {
   applyOperationsInBatches,
   createArchiveBlob,
   downloadBlob,
+  extractDocumentParagraphs,
   generateBlobFromZip,
   ingestDocxFile,
   loadDocxZipFromBlob,
@@ -29,6 +32,10 @@ import {
   createDocumentStore
 } from './document-store.js';
 import {
+  isTourActive,
+  startGuidedTour
+} from './tour.js';
+import {
   formatJobDisplayName,
   getUiRefs,
   renderJobList,
@@ -36,9 +43,13 @@ import {
   setActionEnabled,
   setDropZoneActive,
   setModeButtons,
+  setPreviewModeChip,
   setPreviewTypeButtons,
   setPreviewStatus,
-  setStatusBanner
+  showProgressStrip,
+  hideProgressStrip,
+  setStatusBanner,
+  showToast
 } from './ui.js';
 
 const AUTHOR_NAME = 'Application Station';
@@ -76,8 +87,11 @@ function createAppState() {
     isValidatingApiKey: false,
     onboarding: {
       dismissed: false,
-      forcedOpen: false
+      forcedOpen: false,
+      expanded: false,
+      completedToastShown: false
     },
+    editingJobMetaId: null,
     isRunning: false,
     store: null
   };
@@ -135,6 +149,8 @@ export function createCoverLetterJob({ company, role, description }) {
     role: normalizedRole,
     description: normalizedDescription,
     status: 'queued',
+    generatedMode: 'track',
+    hasAcceptBackup: { coverLetter: false, resume: false },
     recommendation: '',
     coverLetterOperationCount: 0,
     resumeOperationCount: 0,
@@ -196,15 +212,22 @@ function toTitleCase(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
 
-  const titleCased = raw
-    .toLowerCase()
-    .replace(/\b[a-z]/g, letter => letter.toUpperCase());
-
-  return titleCased
+  // Tokenize on whitespace before any lowercasing so mixed-case proper nouns
+  // (McKinsey, iOS, DevOps) pass through unchanged. Only fully-lowercase or
+  // fully-uppercase tokens get title-cased.
+  return raw
     .split(/\s+/)
     .map(token => {
       if (UPPERCASE_FILE_NAME_TOKENS.has(token.toUpperCase())) return token.toUpperCase();
       if (/^[ivxlcdm]+$/i.test(token) && token.length <= 6) return token.toUpperCase();
+
+      const isAllLower = /^[a-z]+$/.test(token);
+      const isAllUpper = /^[A-Z]+$/.test(token);
+      if (isAllLower || isAllUpper) {
+        return token
+          .toLowerCase()
+          .replace(/\b[a-z]/g, letter => letter.toUpperCase());
+      }
       return token;
     })
     .join(' ');
@@ -240,12 +263,16 @@ function buildSampleSourceKey(sampleId) {
   return `${SAMPLE_SOURCE_KEY_PREFIX}:${String(sampleId || '')}`;
 }
 
-function normalizePersistedJob(rawJob) {
+export function normalizePersistedJob(rawJob) {
   const source = rawJob && typeof rawJob === 'object' ? rawJob : {};
   const id = String(source.id || createJobId());
   const storage = source.storage && typeof source.storage === 'object' ? source.storage : {};
 
-  const status = String(source.status || 'queued').toLowerCase();
+  const rawStatus = String(source.status || 'queued').toLowerCase();
+  // In-flight statuses get persisted whenever anything calls persistSessionState
+  // mid-run. On reload they would otherwise be stuck forever (unrunnable),
+  // so coerce them to 'retry'. queued/done/partial/failed/retry are kept as-is.
+  const inflightStatuses = new Set(['preparing', 'tailoring', 'applying']);
   const validStatuses = new Set([
     'queued',
     'preparing',
@@ -256,13 +283,27 @@ function normalizePersistedJob(rawJob) {
     'failed',
     'retry'
   ]);
+  const status = inflightStatuses.has(rawStatus)
+    ? 'retry'
+    : (validStatuses.has(rawStatus) ? rawStatus : 'queued');
+
+  const rawMode = String(source.generatedMode || '').trim().toLowerCase();
+  const generatedMode = rawMode === 'direct' ? 'direct' : 'track';
+
+  const rawBackup = source.hasAcceptBackup && typeof source.hasAcceptBackup === 'object' ? source.hasAcceptBackup : {};
+  const hasAcceptBackup = {
+    coverLetter: Boolean(rawBackup.coverLetter),
+    resume: Boolean(rawBackup.resume)
+  };
 
   return {
     id,
     company: String(source.company || '').trim(),
     role: String(source.role || '').trim(),
     description: String(source.description || '').trim(),
-    status: validStatuses.has(status) ? status : 'queued',
+    status,
+    generatedMode,
+    hasAcceptBackup,
     recommendation: String(source.recommendation || '').trim(),
     coverLetterOperationCount: Number(source.coverLetterOperationCount || 0),
     resumeOperationCount: Number(source.resumeOperationCount || 0),
@@ -471,6 +512,36 @@ function setStoredOnboardingDismissed(value) {
   }
 }
 
+function getStoredWelcomeSeen() {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.WELCOME_SEEN) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setStoredWelcomeSeen(value) {
+  try {
+    if (value) localStorage.setItem(STORAGE_KEYS.WELCOME_SEEN, '1');
+    else localStorage.removeItem(STORAGE_KEYS.WELCOME_SEEN);
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function setStoredTourState(status, step = 0) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.TOUR_STATE, JSON.stringify({
+      version: 1,
+      status: status === 'completed' ? 'completed' : 'skipped',
+      step: Number(step || 0),
+      at: new Date().toISOString()
+    }));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
 function getStoredSidebarWidth() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.SIDEBAR_WIDTH);
@@ -607,13 +678,18 @@ function refreshControls(refs) {
   const hasApiKey = Boolean(refs.apiKeyInput.value.trim());
   const selectedJob = getSelectedJob();
   const hasCompletedSelection = Boolean(selectedJob && ['done', 'partial'].includes(String(selectedJob.status || '')));
-  const canAcceptCoverLetter = Boolean(hasCompletedSelection && Number(selectedJob?.coverLetterOperationCount || 0) > 0);
-  const canAcceptResume = Boolean(hasCompletedSelection && Number(selectedJob?.resumeOperationCount || 0) > 0);
+  // Accept All only applies to results generated in Track Changes mode (B6).
+  const isTrackResult = String(selectedJob?.generatedMode || 'track') === 'track';
+  const canAcceptCoverLetter = Boolean(hasCompletedSelection && isTrackResult && Number(selectedJob?.coverLetterOperationCount || 0) > 0);
+  const canAcceptResume = Boolean(hasCompletedSelection && isTrackResult && Number(selectedJob?.resumeOperationCount || 0) > 0);
   const canAcceptPreviewChanges = state.previewType === 'resume' ? canAcceptResume : canAcceptCoverLetter;
   const canRunAll = hasApiKey && hasBaseDocument() && state.jobs.length > 0 && !state.isRunning;
   const canRunSelected = hasApiKey && hasBaseDocument() && Boolean(selectedJob) && !state.isRunning;
   const canExportSelected = Boolean(selectedJob && ['done', 'partial'].includes(selectedJob.status));
   const canExportAll = hasCompletedJobs();
+  const runDisabledReason = (!hasBaseDocument() || state.jobs.length === 0)
+    ? 'Add a job and upload a base letter first'
+    : (!hasApiKey ? 'Save your Gemini API key in Settings first' : (state.isRunning ? 'Generation already running' : ''));
 
   setActionEnabled(refs, 'runAllBtn', canRunAll);
   setActionEnabled(refs, 'runMenuBtn', canRunAll);
@@ -624,6 +700,29 @@ function refreshControls(refs) {
   setActionEnabled(refs, 'acceptAllChangesBtn', canAcceptPreviewChanges && !state.isRunning);
   setActionEnabled(refs, 'clearSamplesBtn', state.sampleDocuments.length > 0);
   setActionEnabled(refs, 'clearApplicationsBtn', state.jobs.length > 0);
+  refs.runSelectedBtn.title = canRunSelected ? '' : runDisabledReason;
+  refs.runAllBtn.title = canRunAll ? '' : runDisabledReason;
+  refs.runMenuBtn.title = canRunAll ? '' : runDisabledReason;
+  refs.downloadBtn.title = canExportSelected ? '' : 'Generate a tailored letter first';
+  refs.downloadAllBtn.title = canExportAll ? '' : 'Generate a tailored letter first';
+  refs.downloadMenuBtn.title = canExportAll ? '' : 'Generate a tailored letter first';
+  refs.acceptAllChangesBtn.hidden = !canAcceptPreviewChanges;
+
+  // Undo Accept (B5): visible only when a backup exists for the currently
+  // previewed document of the selected job.
+  const canUndoAccept = Boolean(
+    selectedJob
+    && !state.isRunning
+    && (state.previewType === 'resume'
+      ? selectedJob.hasAcceptBackup?.resume
+      : selectedJob.hasAcceptBackup?.coverLetter)
+  );
+  if (refs.undoAcceptBtn) {
+    refs.undoAcceptBtn.hidden = !canUndoAccept;
+  }
+  const keyValidated = hasApiKey && hasValidatedApiKey(refs.apiKeyInput.value);
+  refs.apiKeyValidationChip.textContent = keyValidated ? '✓ Validated' : 'Not validated';
+  refs.apiKeyValidationChip.dataset.status = keyValidated ? 'validated' : 'pending';
 }
 
 function closeActionMenu(refs, type) {
@@ -657,6 +756,40 @@ function openSettingsModal(refs) {
 
 function closeSettingsModal(refs) {
   refs.settingsModal.hidden = true;
+}
+
+function getFocusableChildren(root) {
+  return [...root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(node => !node.disabled && !node.hidden);
+}
+
+function openWelcomeModal(refs) {
+  refs.welcomeModal.hidden = false;
+  refs.welcomeTourBtn.focus();
+}
+
+function closeWelcomeModal(refs) {
+  refs.welcomeModal.hidden = true;
+  document.body.focus?.();
+}
+
+function completeWelcome(refs) {
+  setStoredWelcomeSeen(true);
+  closeWelcomeModal(refs);
+}
+
+function startTour(refs) {
+  closeSettingsModal(refs);
+  closeWelcomeModal(refs);
+  state.onboarding.expanded = false;
+  refreshOnboarding(refs);
+  startGuidedTour({
+    refs,
+    onDone: result => {
+      setStoredTourState(result.status, result.step);
+      refreshOnboarding(refs);
+    }
+  });
 }
 
 function getOnboardingProgress(refs) {
@@ -694,7 +827,6 @@ function setOnboardingStep(refs, stepKey, isComplete) {
 
 function refreshOnboarding(refs) {
   const progress = getOnboardingProgress(refs);
-  const isLockedOpen = !progress.allComplete;
 
   setOnboardingStep(refs, 'api', progress.steps.api);
   setOnboardingStep(refs, 'docs', progress.steps.docs);
@@ -708,44 +840,48 @@ function refreshOnboarding(refs) {
     generate: 'Click Generate to produce your first tailored output.'
   };
   const nextHint = progress.nextStep ? hints[progress.nextStep] : 'All quick-start steps are complete.';
-  const lockHint = isLockedOpen ? ' This guide stays visible until all steps are complete.' : '';
-  refs.onboardingHint.textContent = `${progress.completeCount}/${progress.totalCount} complete. ${nextHint}${lockHint}`;
+  refs.onboardingHint.textContent = `${progress.completeCount}/${progress.totalCount} complete. ${nextHint}`;
   refs.onboardingPrimaryBtn.textContent = progress.allComplete ? 'Close Guide' : 'Take Me To Next Step';
   refs.onboardingPrimaryBtn.disabled = state.isValidatingApiKey;
-  refs.onboardingCloseBtn.hidden = isLockedOpen;
-  refs.onboardingDismissBtn.hidden = isLockedOpen;
+  refs.onboardingCloseBtn.hidden = false;
+  refs.onboardingDismissBtn.hidden = false;
   refs.onboardingBackdrop.hidden = true;
+  refs.onboardingProgressText.textContent = `Setup ${progress.completeCount}/${progress.totalCount}`;
+  refs.onboardingPillBtn.setAttribute('aria-expanded', state.onboarding.expanded ? 'true' : 'false');
 
-  if (isLockedOpen) {
-    state.onboarding.dismissed = false;
-    setStoredOnboardingDismissed(false);
+  if (progress.allComplete && !state.onboarding.completedToastShown && !state.onboarding.dismissed) {
+    state.onboarding.completedToastShown = true;
+    state.onboarding.dismissed = true;
+    setStoredOnboardingDismissed(true);
+    showToast(refs, "Setup complete — you're ready to tailor at scale 🎉", 'success', 3600);
   }
 
-  const shouldShow = isLockedOpen || state.onboarding.forcedOpen;
+  const shouldShow = !state.onboarding.dismissed && !progress.allComplete && !isTourActive();
   refs.onboardingModal.hidden = !shouldShow;
+  refs.onboardingModal.classList.toggle('is-expanded', Boolean(shouldShow && state.onboarding.expanded));
+  refs.onboardingModal.classList.toggle('is-collapsed', Boolean(shouldShow && !state.onboarding.expanded));
 }
 
 function openOnboardingModal(refs, force = false) {
   state.onboarding.forcedOpen = Boolean(force);
+  state.onboarding.dismissed = false;
+  if (force) setStoredOnboardingDismissed(false);
+  state.onboarding.expanded = true;
   refs.onboardingModal.hidden = false;
   refreshOnboarding(refs);
 }
 
 function closeOnboardingModal(refs, options = {}) {
-  const progress = getOnboardingProgress(refs);
-  if (!progress.allComplete) {
-    state.onboarding.forcedOpen = false;
-    refs.onboardingModal.hidden = false;
-    return;
-  }
-
   const dismiss = Boolean(options?.dismiss);
   if (dismiss) {
     state.onboarding.dismissed = true;
     setStoredOnboardingDismissed(true);
+    refs.onboardingModal.hidden = true;
+  } else {
+    state.onboarding.expanded = false;
   }
   state.onboarding.forcedOpen = false;
-  refs.onboardingModal.hidden = true;
+  refreshOnboarding(refs);
 }
 
 function jumpToElement(element) {
@@ -873,7 +1009,8 @@ function renderUi(refs) {
   }
 
   renderJobList(refs, state.jobs, state.selectedJobId);
-  renderSelectedJob(refs, selectedJob);
+  renderSelectedJob(refs, selectedJob, { editing: state.editingJobMetaId === selectedJob?.id });
+  setPreviewModeChip(refs, selectedJob);
   setPreviewTypeButtons(refs, state.previewType);
 
   refs.baseFileMeta.textContent = state.baseDocument.fileName
@@ -930,6 +1067,11 @@ async function persistSessionState() {
       role: String(job.role || '').trim(),
       description: String(job.description || '').trim(),
       status: String(job.status || 'queued').trim(),
+      generatedMode: String(job.generatedMode || 'track').trim() === 'direct' ? 'direct' : 'track',
+      hasAcceptBackup: {
+        coverLetter: Boolean(job?.hasAcceptBackup?.coverLetter),
+        resume: Boolean(job?.hasAcceptBackup?.resume)
+      },
       recommendation: String(job.recommendation || '').trim(),
       coverLetterOperationCount: Number(job.coverLetterOperationCount || 0),
       resumeOperationCount: Number(job.resumeOperationCount || 0),
@@ -1073,6 +1215,32 @@ function createPreviewSkeletonPlaceholder() {
   return shell;
 }
 
+function createPreviewEmptyState(refs, isResumePreview) {
+  const empty = document.createElement('div');
+  empty.className = 'preview-empty-state';
+
+  const logo = document.createElement('img');
+  logo.src = './assets/logo-quill.svg?v=2026-06-26-emerald';
+  logo.alt = '';
+  logo.setAttribute('aria-hidden', 'true');
+
+  const text = document.createElement('p');
+  text.textContent = isResumePreview
+    ? 'Upload your resume to see it here'
+    : 'Upload your base cover letter to see it here';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Choose .docx…';
+  button.addEventListener('click', () => {
+    if (isResumePreview) refs.resumeFileInput.click();
+    else refs.baseFileInput.click();
+  });
+
+  empty.append(logo, text, button);
+  return empty;
+}
+
 async function renderSelectedPreview(refs) {
   const selectedJob = getSelectedJob();
   const isResumePreview = state.previewType === 'resume';
@@ -1088,8 +1256,8 @@ async function renderSelectedPreview(refs) {
     : (selectedCoverLetterBlob || await state.store.getBlob(BASE_SOURCE_KEY));
 
   if (!previewBlob) {
-    refs.previewHost.classList.add('preview-host-skeleton');
-    refs.previewHost.replaceChildren(createPreviewSkeletonPlaceholder());
+    refs.previewHost.classList.remove('preview-host-skeleton');
+    refs.previewHost.replaceChildren(createPreviewEmptyState(refs, isResumePreview));
     setPreviewStatus(
       refs,
       isResumePreview ? 'Upload a resume to preview resume edits.' : 'Upload a base cover letter to preview.',
@@ -1133,6 +1301,47 @@ async function renderSelectedPreview(refs) {
   }
 }
 
+async function saveSelectedJobMetadata(refs) {
+  const selectedJob = getSelectedJob();
+  if (!selectedJob) return;
+  selectedJob.company = refs.editJobCompanyInput.value.trim();
+  selectedJob.role = refs.editJobRoleInput.value.trim();
+  state.editingJobMetaId = null;
+  await persistSessionState();
+  renderUi(refs);
+}
+
+function cancelSelectedJobMetadataEdit(refs) {
+  state.editingJobMetaId = null;
+  renderUi(refs);
+}
+
+function deleteIndexedDbDatabase(name) {
+  return new Promise(resolve => {
+    if (!globalThis.indexedDB) {
+      resolve();
+      return;
+    }
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = () => resolve();
+    request.onerror = () => resolve();
+    request.onblocked = () => resolve();
+  });
+}
+
+async function clearAllData() {
+  if (!confirm('Clear all saved documents, jobs, settings, and API key from this browser?')) return;
+  for (const key of Object.values(STORAGE_KEYS)) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Ignore storage errors.
+    }
+  }
+  await deleteIndexedDbDatabase('cover-letter-ai-store');
+  location.reload();
+}
+
 async function setBaseFile(refs, file) {
   if (!file) return;
 
@@ -1151,6 +1360,7 @@ async function setBaseFile(refs, file) {
   await persistSessionState();
 
   setStatusBanner(refs, `Loaded base cover letter: ${picked.name}`, 'success');
+  warnIfDocumentWillBeTruncated(refs, parsed.fullText || getContextText(parsed.paragraphs), MAX_BASE_LETTER_CHARS);
   renderUi(refs);
   await renderSelectedPreview(refs);
 }
@@ -1173,21 +1383,25 @@ async function setResumeFile(refs, file) {
   await persistSessionState();
 
   setStatusBanner(refs, `Loaded resume source: ${picked.name}`, 'success');
+  warnIfDocumentWillBeTruncated(refs, getContextText(paragraphs), MAX_CONTEXT_CHARS);
   renderUi(refs);
 }
 
 async function addSampleFiles(refs, files) {
   const docxFiles = filterDocxFiles(files);
+  const skippedCount = Math.max(0, Array.from(files || []).length - docxFiles.length);
   if (docxFiles.length === 0) {
     setStatusBanner(refs, 'Sample letters must be .docx files.', 'error');
     return;
   }
 
+  let hasLongSample = false;
   for (const file of docxFiles) {
     const paragraphs = await loadParagraphsFromBlob(file, file.name);
     const sampleId = createJobId();
     const storageKey = buildSampleSourceKey(sampleId);
     await state.store.putBlob(storageKey, file);
+    hasLongSample = hasLongSample || getContextText(paragraphs).length > MAX_CONTEXT_CHARS;
     state.sampleDocuments.push({
       id: sampleId,
       fileName: file.name,
@@ -1197,7 +1411,11 @@ async function addSampleFiles(refs, files) {
   }
   await persistSessionState();
 
-  setStatusBanner(refs, `Loaded ${docxFiles.length} sample letter(s) for style context.`, 'success');
+  const skippedNote = skippedCount > 0 ? ` (${skippedCount} non-.docx file(s) skipped)` : '';
+  setStatusBanner(refs, `Loaded ${docxFiles.length} sample letter(s) for style context.${skippedNote}`, 'success');
+  if (hasLongSample) {
+    showTruncationWarning(refs, MAX_CONTEXT_CHARS);
+  }
   renderUi(refs);
 }
 
@@ -1251,6 +1469,22 @@ function getContextText(paragraphs) {
     .join('\n');
 }
 
+function warnIfDocumentWillBeTruncated(refs, text, cap) {
+  const value = String(text || '');
+  if (value.length <= cap) return false;
+  showTruncationWarning(refs, cap);
+  return true;
+}
+
+function showTruncationWarning(refs, cap) {
+  const rounded = Math.round(cap / 1000);
+  setStatusBanner(
+    refs,
+    `This document is long; only the first ~${rounded},000 characters will be sent to the AI.`,
+    'warn'
+  );
+}
+
 function stripCommentOperations(operations) {
   return (Array.isArray(operations) ? operations : []).filter(operation => operation?.type !== 'comment');
 }
@@ -1262,8 +1496,14 @@ async function clearTailoredApplications(refs) {
   }
 
   for (const job of state.jobs) {
-    if (job?.storage?.resultKey) await state.store.remove(job.storage.resultKey);
-    if (job?.storage?.resumeResultKey) await state.store.remove(job.storage.resumeResultKey);
+    if (job?.storage?.resultKey) {
+      await state.store.remove(job.storage.resultKey);
+      await state.store.remove(`${job.storage.resultKey}:pre-accept`);
+    }
+    if (job?.storage?.resumeResultKey) {
+      await state.store.remove(job.storage.resumeResultKey);
+      await state.store.remove(`${job.storage.resumeResultKey}:pre-accept`);
+    }
     if (job?.storage?.detailsKey) await state.store.remove(job.storage.detailsKey);
   }
 
@@ -1288,8 +1528,14 @@ async function removeTailoredApplicationById(refs, jobId) {
   const job = state.jobs.find(item => item.id === normalizedId);
   if (!job) return;
 
-  if (job?.storage?.resultKey) await state.store.remove(job.storage.resultKey);
-  if (job?.storage?.resumeResultKey) await state.store.remove(job.storage.resumeResultKey);
+  if (job?.storage?.resultKey) {
+    await state.store.remove(job.storage.resultKey);
+    await state.store.remove(`${job.storage.resultKey}:pre-accept`);
+  }
+  if (job?.storage?.resumeResultKey) {
+    await state.store.remove(job.storage.resumeResultKey);
+    await state.store.remove(`${job.storage.resumeResultKey}:pre-accept`);
+  }
   if (job?.storage?.detailsKey) await state.store.remove(job.storage.detailsKey);
 
   state.jobs = state.jobs.filter(item => item.id !== normalizedId);
@@ -1301,6 +1547,10 @@ async function removeTailoredApplicationById(refs, jobId) {
   setStatusBanner(refs, `Removed application: ${formatJobDisplayName(job)}`, 'success');
   renderUi(refs);
   await renderSelectedPreview(refs);
+}
+
+function getAcceptBackupKey(storageKey) {
+  return `${storageKey}:pre-accept`;
 }
 
 async function acceptAllPreviewRedlines(refs) {
@@ -1355,8 +1605,16 @@ async function acceptAllPreviewRedlines(refs) {
       return;
     }
 
+    // Back up the tracked-changes version before overwriting (B5) so an Undo
+    // can restore it.
+    const backupKey = getAcceptBackupKey(storageKey);
+    await state.store.putBlob(backupKey, sourceBlob);
+
     const updatedBlob = await generateBlobFromZip(zip);
     await state.store.putBlob(storageKey, updatedBlob);
+
+    if (!selectedJob.hasAcceptBackup) selectedJob.hasAcceptBackup = { coverLetter: false, resume: false };
+    selectedJob.hasAcceptBackup[isResumePreview ? 'resume' : 'coverLetter'] = true;
     await persistSessionState();
 
     renderUi(refs);
@@ -1368,6 +1626,50 @@ async function acceptAllPreviewRedlines(refs) {
     );
   } catch (error) {
     setStatusBanner(refs, `Accept-all failed: ${error?.message || String(error)}`, 'error');
+  }
+}
+
+async function undoAcceptAllRedlines(refs) {
+  if (state.isRunning) {
+    setStatusBanner(refs, 'Wait for generation to finish before undoing accept.', 'warn');
+    return;
+  }
+
+  const selectedJob = getSelectedJob();
+  if (!selectedJob) {
+    setStatusBanner(refs, 'Select a tailored application first.', 'warn');
+    return;
+  }
+
+  const isResumePreview = state.previewType === 'resume';
+  const storageKey = isResumePreview
+    ? selectedJob.storage.resumeResultKey
+    : selectedJob.storage.resultKey;
+  if (!storageKey) {
+    setStatusBanner(refs, 'No generated preview document is available.', 'warn');
+    return;
+  }
+
+  const backupKey = getAcceptBackupKey(storageKey);
+  const backupBlob = await state.store.getBlob(backupKey);
+  if (!backupBlob) {
+    setStatusBanner(refs, 'No tracked-changes backup is available to restore.', 'warn');
+    return;
+  }
+
+  try {
+    await state.store.putBlob(storageKey, backupBlob);
+    await state.store.remove(backupKey);
+
+    if (!selectedJob.hasAcceptBackup) selectedJob.hasAcceptBackup = { coverLetter: false, resume: false };
+    selectedJob.hasAcceptBackup[isResumePreview ? 'resume' : 'coverLetter'] = false;
+    await persistSessionState();
+
+    renderUi(refs);
+    await renderSelectedPreview(refs);
+    setStatusBanner(refs, 'Restored tracked-changes version.', 'success');
+  } catch (error) {
+    setStatusBanner(refs, `Undo accept failed: ${error?.message || String(error)}`, 'error');
   }
 }
 
@@ -1385,26 +1687,142 @@ async function persistJobResult(job, coverLetterZip, resumeZip, details) {
   await state.store.putJson(job.storage.detailsKey, details);
 }
 
-async function runJob(job, refs) {
+async function repairFailedOperationsOnce({
+  zip,
+  applyResult,
+  label,
+  refs,
+  job,
+  generateRedlines
+}) {
+  const failedResults = (Array.isArray(applyResult?.results) ? applyResult.results : [])
+    .filter(result => result && !result.success);
+  if (!zip || failedResults.length === 0) return applyResult;
+
+  const currentParagraphs = await extractDocumentParagraphs(zip);
+  const reconciled = reconcileOperationsWithParagraphs(failedResults, currentParagraphs, {
+    onInfo: message => console.info(`[Application Station] ${message}`)
+  });
+  const retryOperations = reconciled.filter((op, index) => {
+    const original = failedResults[index];
+    return op
+      && original
+      && (op.target !== original.target || op.targetRef !== original.targetRef);
+  });
+
+  if (retryOperations.length === 0) return applyResult;
+
+  updateRunProgress(refs, job, `Repairing ${label} edits`, { completed: 0, total: retryOperations.length });
+  const retryApply = await applyOperationsInBatches({
+    zip,
+    operations: retryOperations,
+    author: AUTHOR_NAME,
+    batchSize: OPERATION_BATCH_SIZE,
+    generateRedlines,
+    onProgress: progress => {
+      updateRunProgress(
+        refs,
+        job,
+        `Repairing ${label} edits (${progress.completed}/${progress.totalOperations})`,
+        { completed: progress.completed, total: progress.totalOperations }
+      );
+    }
+  });
+
+  const retriedKeys = new Set(retryOperations.map(op => `${op.type}|${op.targetRef}|${op.target}`));
+  const carriedResults = (Array.isArray(applyResult?.results) ? applyResult.results : [])
+    .filter(result => {
+      if (result.success) return true;
+      const originalIndex = failedResults.indexOf(result);
+      const retryOp = reconciled[originalIndex];
+      if (!retryOp) return true;
+      const retryKey = `${retryOp.type}|${retryOp.targetRef}|${retryOp.target}`;
+      return !retriedKeys.has(retryKey);
+    });
+  const mergedResults = [
+    ...carriedResults,
+    ...retryApply.results
+  ];
+
+  return {
+    results: mergedResults,
+    validation: retryApply.validation || applyResult.validation,
+    failures: summarizeApplyFailures(mergedResults)
+  };
+}
+
+function summarizeApplyFailures(results) {
+  return (Array.isArray(results) ? results : [])
+    .filter(result => result && !result.success)
+    .map(result => {
+      const ref = Number.isInteger(result?.targetRef) && result.targetRef > 0
+        ? `P${result.targetRef}`
+        : 'unknown paragraph';
+      const type = String(result?.type || 'operation').trim() || 'operation';
+      const reason = result?.error
+        ? String(result.error)
+        : 'target text was not found in the document';
+      return `${type} on ${ref}: ${reason}`;
+    });
+}
+
+// Returns a user-facing error string when a run cannot start, or null when the
+// preconditions are satisfied. Centralized so runAllJobs/runSelectedJob can
+// bail out before flipping any job to 'preparing' (B1), and runJob can reset
+// stuck statuses on its belt-and-braces early exits.
+function getRunPreconditionError(refs) {
+  const apiKey = refs.apiKeyInput.value.trim();
+  if (!apiKey) return 'Enter a Gemini API key first.';
+  if (!hasValidatedApiKey(apiKey)) return 'Validate your Gemini API key in Settings before generating.';
+  if (!hasBaseDocument()) return 'Upload a base cover letter first.';
+  return null;
+}
+
+// Belt-and-braces: if runJob bails out before its try block (B1), reset the
+// job's status so it doesn't stay stuck in 'preparing'. A job that previously
+// reached a terminal state goes back to 'retry'; otherwise back to 'queued'.
+function resetJobStatusAfterGuardedExit(job, refs) {
+  if (!job) return;
+  const previousTerminal = ['done', 'partial', 'failed', 'retry'].includes(String(job.status || ''));
+  job.status = previousTerminal ? 'retry' : 'queued';
+  renderUi(refs);
+}
+
+function updateRunProgress(refs, job, stage, progress = {}) {
+  if (!state.isRunning) return;
+  const completed = Number(progress.completed ?? 0);
+  const total = Number(progress.total ?? 1);
+  showProgressStrip(refs, {
+    label: `${stage} — ${formatJobDisplayName(job)}`,
+    completed,
+    total
+  });
+}
+
+async function runJob(job, refs, progressContext = {}) {
   const apiKey = refs.apiKeyInput.value.trim();
   if (!apiKey) {
     setStatusBanner(refs, 'Enter a Gemini API key first.', 'warn');
+    resetJobStatusAfterGuardedExit(job, refs);
     return;
   }
   if (!hasValidatedApiKey(apiKey)) {
     setStatusBanner(refs, 'Validate your Gemini API key in Settings before generating.', 'warn');
     openSettingsModal(refs);
+    resetJobStatusAfterGuardedExit(job, refs);
     return;
   }
 
   if (!hasBaseDocument()) {
     setStatusBanner(refs, 'Upload a base cover letter first.', 'warn');
+    resetJobStatusAfterGuardedExit(job, refs);
     return;
   }
 
   const baseBlob = await state.store.getBlob(BASE_SOURCE_KEY);
   if (!baseBlob) {
     setStatusBanner(refs, 'Base cover letter is missing from local storage.', 'error');
+    resetJobStatusAfterGuardedExit(job, refs);
     return;
   }
 
@@ -1415,7 +1833,10 @@ async function runJob(job, refs) {
     job.status = 'preparing';
     job.failedOperations = [];
     job.validationError = '';
+    // Re-running a job clears any accept-backup state (B5).
+    job.hasAcceptBackup = { coverLetter: false, resume: false };
     renderUi(refs);
+    updateRunProgress(refs, job, 'Preparing', progressContext);
 
     coverLetterZip = await loadDocxZipFromBlob(baseBlob);
     const baseParagraphs = Array.isArray(state.baseDocument.paragraphs) && state.baseDocument.paragraphs.length > 0
@@ -1440,7 +1861,7 @@ async function runJob(job, refs) {
 
     job.status = 'tailoring';
     renderUi(refs);
-    setStatusBanner(refs, `Tailoring for ${formatJobDisplayName(job)}...`, 'info');
+    updateRunProgress(refs, job, 'Tailoring', progressContext);
 
     // Cover letter and resume tailoring are independent network calls — run them together.
     const [aiOutput, resumeAiOutput] = await Promise.all([
@@ -1495,6 +1916,7 @@ async function runJob(job, refs) {
 
     job.status = 'applying';
     renderUi(refs);
+    updateRunProgress(refs, job, 'Applying edits', progressContext);
 
     const emptyApply = { results: [], validation: { ok: true, error: null }, failures: [] };
 
@@ -1507,11 +1929,7 @@ async function runJob(job, refs) {
         batchSize: OPERATION_BATCH_SIZE,
         generateRedlines: state.editMode === 'track',
         onProgress: progress => {
-          setStatusBanner(
-            refs,
-            `Applying cover letter edits for ${formatJobDisplayName(job)} (${progress.completed}/${progress.totalOperations})...`,
-            'info'
-          );
+          updateRunProgress(refs, job, `Applying cover letter edits (${progress.completed}/${progress.totalOperations})`, progressContext);
         }
       });
     }
@@ -1525,12 +1943,30 @@ async function runJob(job, refs) {
         batchSize: OPERATION_BATCH_SIZE,
         generateRedlines: state.editMode === 'track',
         onProgress: progress => {
-          setStatusBanner(
-            refs,
-            `Applying resume edits for ${formatJobDisplayName(job)} (${progress.completed}/${progress.totalOperations})...`,
-            'info'
-          );
+          updateRunProgress(refs, job, `Applying resume edits (${progress.completed}/${progress.totalOperations})`, progressContext);
         }
+      });
+    }
+
+    if (coverLetterApply.failures.length > 0) {
+      coverLetterApply = await repairFailedOperationsOnce({
+        zip: coverLetterZip,
+        applyResult: coverLetterApply,
+        label: 'cover letter',
+        refs,
+        job,
+        generateRedlines: state.editMode === 'track'
+      });
+    }
+
+    if (resumeApply.failures.length > 0 && resumeZip) {
+      resumeApply = await repairFailedOperationsOnce({
+        zip: resumeZip,
+        applyResult: resumeApply,
+        label: 'resume',
+        refs,
+        job,
+        generateRedlines: state.editMode === 'track'
       });
     }
 
@@ -1556,6 +1992,7 @@ async function runJob(job, refs) {
     job.validationError = validationErrors.join(' | ');
 
     job.status = (job.failedOperationCount > 0 || validationErrors.length > 0) ? 'partial' : 'done';
+    job.generatedMode = state.editMode === 'direct' ? 'direct' : 'track';
 
     await persistJobResult(job, coverLetterZip, resumeZip, {
       recommendation: aiOutput.recommendation,
@@ -1579,16 +2016,16 @@ async function runJob(job, refs) {
     const partialNote = validationErrors.length > 0
       ? ` ${job.failedOperationCount} edit(s) not applied; output may be invalid.`
       : (job.failedOperationCount > 0 ? ` ${job.failedOperationCount} edit(s) could not be applied.` : '');
-    setStatusBanner(
-      refs,
-      `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).${partialNote}`,
-      statusLevel
-    );
+    const outcomeMessage = `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).${partialNote}`;
+    if (state.isRunning) showToast(refs, outcomeMessage, statusLevel, statusLevel === 'warn' ? 3600 : 2600);
+    else setStatusBanner(refs, outcomeMessage, statusLevel);
   } catch (error) {
     job.status = 'failed';
     job.runtime.error = error?.message || String(error);
     job.recommendation = `Generation failed: ${job.runtime.error}`;
-    setStatusBanner(refs, `Failed ${formatJobDisplayName(job)}: ${job.runtime.error}`, 'error');
+    const failureMessage = `Failed ${formatJobDisplayName(job)}: ${job.runtime.error}`;
+    if (state.isRunning) showToast(refs, failureMessage, 'error', 5000);
+    else setStatusBanner(refs, failureMessage, 'error');
   }
 
   await persistSessionState();
@@ -1606,15 +2043,25 @@ async function runSelectedJob(refs) {
     return;
   }
 
+  // Bail out before touching any job status (B1): a missing/unvalidated key or
+  // missing base doc leaves all jobs in their current state.
+  const preconditionError = getRunPreconditionError(refs);
+  if (preconditionError) {
+    setStatusBanner(refs, preconditionError, 'warn');
+    if (/API key/i.test(preconditionError)) openSettingsModal(refs);
+    return;
+  }
+
   state.isRunning = true;
   renderUi(refs);
   try {
     if (job.status === 'done' || job.status === 'partial' || job.status === 'failed') {
       job.status = 'retry';
     }
-    await runJob(job, refs);
+    await runJob(job, refs, { completed: 0, total: 1 });
   } finally {
     state.isRunning = false;
+    hideProgressStrip(refs);
     renderUi(refs);
   }
 }
@@ -1626,8 +2073,26 @@ async function runAllJobs(refs) {
     return;
   }
 
+  // Bail out before flipping any job to 'preparing' (B1).
+  const preconditionError = getRunPreconditionError(refs);
+  if (preconditionError) {
+    setStatusBanner(refs, preconditionError, 'warn');
+    if (/API key/i.test(preconditionError)) openSettingsModal(refs);
+    return;
+  }
+
   state.isRunning = true;
   renderUi(refs);
+  const totalJobs = state.jobs.filter(job => ['queued', 'retry'].includes(String(job.status || '').toLowerCase())).length || state.jobs.length;
+  let completedJobs = 0;
+  const progressContext = {
+    get completed() {
+      return completedJobs;
+    },
+    get total() {
+      return totalJobs;
+    }
+  };
 
   try {
     if (!getNextRunnableJob(state.jobs)) {
@@ -1653,7 +2118,13 @@ async function runAllJobs(refs) {
     const worker = async () => {
       let job = claimNextJob();
       while (job) {
-        await runJob(job, refs);
+        await runJob(job, refs, progressContext);
+        completedJobs += 1;
+        showProgressStrip(refs, {
+          label: `Tailoring ${completedJobs} of ${totalJobs} complete`,
+          completed: completedJobs,
+          total: totalJobs
+        });
         job = claimNextJob();
       }
     };
@@ -1664,6 +2135,7 @@ async function runAllJobs(refs) {
     setStatusBanner(refs, 'Batch generation complete.', 'success');
   } finally {
     state.isRunning = false;
+    hideProgressStrip(refs);
     renderUi(refs);
     await renderSelectedPreview(refs);
   }
@@ -1797,8 +2269,32 @@ async function init() {
     openSettingsModal(refs);
   });
   refs.onboardingBtn.addEventListener('click', () => {
+    startTour(refs);
+  });
+  refs.setupChecklistBtn.addEventListener('click', () => {
     closeSettingsModal(refs);
     openOnboardingModal(refs, true);
+  });
+  refs.clearAllDataBtn.addEventListener('click', () => {
+    clearAllData();
+  });
+  refs.welcomeTourBtn.addEventListener('click', () => {
+    setStoredWelcomeSeen(true);
+    startTour(refs);
+  });
+  refs.welcomeSkipBtn.addEventListener('click', () => {
+    completeWelcome(refs);
+    refreshOnboarding(refs);
+  });
+  refs.welcomeCloseBtn.addEventListener('click', () => {
+    completeWelcome(refs);
+    refreshOnboarding(refs);
+  });
+  refs.welcomeModal.addEventListener('click', event => {
+    if (event.target === refs.welcomeModal) {
+      completeWelcome(refs);
+      refreshOnboarding(refs);
+    }
   });
   refs.themeToggleBtn.addEventListener('click', () => {
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
@@ -1820,8 +2316,29 @@ async function init() {
   refs.onboardingDismissBtn.addEventListener('click', () => {
     closeOnboardingModal(refs, { dismiss: true });
   });
+  refs.onboardingPillBtn.addEventListener('click', () => {
+    state.onboarding.expanded = true;
+    refreshOnboarding(refs);
+  });
+  refs.onboardingTourBtn.addEventListener('click', () => {
+    startTour(refs);
+  });
   refs.onboardingPrimaryBtn.addEventListener('click', () => {
     handleOnboardingPrimaryAction(refs);
+  });
+  refs.editJobMetaBtn.addEventListener('click', () => {
+    const selectedJob = getSelectedJob();
+    if (!selectedJob) return;
+    state.editingJobMetaId = selectedJob.id;
+    renderUi(refs);
+    refs.editJobCompanyInput.focus();
+  });
+  refs.jobMetaEditForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    await saveSelectedJobMetadata(refs);
+  });
+  refs.cancelJobMetaBtn.addEventListener('click', () => {
+    cancelSelectedJobMetadataEdit(refs);
   });
 
   refs.runMenuBtn.addEventListener('click', event => {
@@ -1846,7 +2363,22 @@ async function init() {
     if (event.key === 'Escape') {
       closeAllActionMenus(refs);
       closeSettingsModal(refs);
+      if (!refs.welcomeModal.hidden) {
+        completeWelcome(refs);
+        refreshOnboarding(refs);
+      }
       closeOnboardingModal(refs, { dismiss: true });
+    }
+    if (!refs.welcomeModal.hidden && event.key === 'Tab') {
+      const focusables = getFocusableChildren(refs.welcomeModal);
+      if (focusables.length === 0) return;
+      const current = document.activeElement;
+      let next = focusables.indexOf(current);
+      next = event.shiftKey ? next - 1 : next + 1;
+      if (next < 0) next = focusables.length - 1;
+      if (next >= focusables.length) next = 0;
+      event.preventDefault();
+      focusables[next].focus();
     }
   });
 
@@ -1933,6 +2465,11 @@ async function init() {
   refs.acceptAllChangesBtn.addEventListener('click', async () => {
     await acceptAllPreviewRedlines(refs);
   });
+  if (refs.undoAcceptBtn) {
+    refs.undoAcceptBtn.addEventListener('click', async () => {
+      await undoAcceptAllRedlines(refs);
+    });
+  }
 
   refs.jobList.addEventListener('click', async event => {
     const target = event.target instanceof Element ? event.target : null;
@@ -1944,6 +2481,12 @@ async function init() {
       const actionJobId = actionButton.getAttribute('data-job-id');
       if (action === 'remove' && actionJobId) {
         await removeTailoredApplicationById(refs, actionJobId);
+      }
+      if (action === 'retry' && actionJobId) {
+        state.selectedJobId = actionJobId;
+        await persistSessionState();
+        renderUi(refs);
+        await runSelectedJob(refs);
       }
       return;
     }
@@ -1974,6 +2517,7 @@ async function init() {
   const restoredSession = await restoreSessionState();
   renderUi(refs);
   if (restoredSession.restored) {
+    if (!getStoredWelcomeSeen()) setStoredWelcomeSeen(true);
     setStatusBanner(
       refs,
       `Restored previous session (${restoredSession.jobCount} job${restoredSession.jobCount === 1 ? '' : 's'}).`,
@@ -1983,6 +2527,9 @@ async function init() {
   } else {
     setStatusBanner(refs, 'Upload a base cover letter, then add one or more jobs.', 'info');
     await renderSelectedPreview(refs);
+    if (!getStoredWelcomeSeen()) {
+      openWelcomeModal(refs);
+    }
   }
 }
 

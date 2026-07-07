@@ -30,7 +30,8 @@
   <meta property="og:title" content="Application Station | AI Cover Letter Generator & Resume Tailoring Tool" />
   <meta property="og:description"
     content="Create tailored cover letters and resumes for multiple roles with AI. Upload DOCX files, generate personalized applications, and export in minutes." />
-  <meta property="og:image" content="https://ansonlai.github.io/Mass-Cover-Letters/assets/logo-quill.svg?v=2026-06-26-emerald" />
+  <meta property="og:image"
+    content="https://ansonlai.github.io/Mass-Cover-Letters/assets/logo-quill.svg?v=2026-06-26-emerald" />
   <meta property="og:locale" content="en_US" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Application Station | AI Cover Letter Generator & Resume Tailoring Tool" />
@@ -79,7 +80,8 @@
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark">
-          <img src="./assets/logo-quill.svg?v=2026-06-26-emerald" alt="Application Station logo" class="brand-logo-wide" />
+          <img src="./assets/logo-quill.svg?v=2026-06-26-emerald" alt="Application Station logo"
+            class="brand-logo-wide" />
         </div>
         <div>
           <h1><span class="brand-primary">Application</span><span class="brand-secondary">Station</span></h1>
@@ -181,20 +183,32 @@
         aria-label="Resize sidebar" tabindex="0"></div>
 
       <section class="main-panel">
-        <div id="statusBanner" class="status-banner" data-level="info">Application Station is ready. Upload a base cover
+        <div id="statusBanner" class="status-banner" data-level="info" hidden>Application Station is ready. Upload a
+          base cover
           letter, then add jobs.</div>
 
         <div class="main-header-row">
-          <div>
+          <div id="selectedJobDisplay" class="selected-job-display">
             <h2 id="selectedJobTitle">No Job Selected</h2>
             <p id="selectedJobMeta" class="muted">Add a job description to begin tailoring.</p>
           </div>
+          <button id="editJobMetaBtn" type="button" class="secondary-btn icon-btn selected-job-edit-btn"
+            aria-label="Edit job company and role" title="Edit company and role">✎</button>
+          <form id="jobMetaEditForm" class="job-meta-edit-form" hidden>
+            <input id="editJobCompanyInput" type="text" placeholder="Company" aria-label="Company" />
+            <input id="editJobRoleInput" type="text" placeholder="Role" aria-label="Role" />
+            <button id="saveJobMetaBtn" type="submit">Save</button>
+            <button id="cancelJobMetaBtn" type="button" class="secondary-btn">Cancel</button>
+          </form>
         </div>
 
         <section class="preview-card">
           <div class="preview-head">
             <div class="preview-head-row preview-head-top">
-              <h3 id="previewTitle">Cover Letter Preview</h3>
+              <div class="preview-title-wrap">
+                <h3 id="previewTitle">Cover Letter Preview</h3>
+                <span id="previewModeChip" class="preview-mode-chip" hidden></span>
+              </div>
               <div class="preview-type-toggle" role="group" aria-label="Preview document type">
                 <button id="previewCoverLetterBtn" type="button" class="preview-type-btn active">Cover Letter</button>
                 <button id="previewResumeBtn" type="button" class="preview-type-btn">Resume</button>
@@ -204,6 +218,8 @@
               <p id="previewStatus" class="muted" data-level="info">Application Station preview will appear here.</p>
               <button id="acceptAllChangesBtn" type="button" class="secondary-btn preview-action-btn">Accept All
                 Changes</button>
+              <button id="undoAcceptBtn" type="button" class="secondary-btn preview-action-btn" hidden>Undo
+                Accept</button>
             </div>
           </div>
           <div id="previewHost" class="preview-host"></div>
@@ -216,6 +232,69 @@
       </section>
     </main>
   </div>
+  <div id="welcomeModal" class="welcome-modal" hidden>
+    <section class="welcome-dialog" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle">
+      <button id="welcomeCloseBtn" type="button" class="welcome-close" aria-label="Skip introduction">✕</button>
+      <div class="welcome-body">
+        <div class="welcome-brand">
+          <svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="welcomeLogoGrad" x1="2" y1="3" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#34D399" /><stop offset="1" stop-color="#059669" />
+              </linearGradient>
+            </defs>
+            <g transform="translate(2 2)">
+              <path d="M6.4 30L2.8 14.2L14.6 9.2L17.4 27.4" stroke="url(#welcomeLogoGrad)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M12.3 29.2L10.4 11.2L23.2 8.8L24.7 26.8" stroke="url(#welcomeLogoGrad)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M18.4 29.5L19.3 11.6L31.8 12.3L30.3 28.4" stroke="url(#welcomeLogoGrad)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M21 10.2V3.4" stroke="url(#welcomeLogoGrad)" stroke-width="2.4" stroke-linecap="round" />
+              <path d="M17.3 6.7L21 3.2L24.7 6.7" stroke="url(#welcomeLogoGrad)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M11.2 12.2H26.2L31.4 17V32.3H11.2V12.2Z" fill="#ECFDF5" stroke="#0F231D" stroke-width="2" />
+              <path d="M26.2 12.2V17H31.4" stroke="#0F231D" stroke-width="2" stroke-linejoin="round" />
+              <path d="M15.3 18.5H26.5" stroke="#0F231D" stroke-width="1.6" stroke-linecap="round" />
+              <path d="M15.3 22.1H26.5" stroke="#0F231D" stroke-width="1.6" stroke-linecap="round" />
+              <path d="M15.3 25.7H23.4" stroke="#0F231D" stroke-width="1.6" stroke-linecap="round" />
+            </g>
+          </svg>
+          <span><span class="brand-a">Application</span><span class="brand-b">Station</span></span>
+        </div>
+        <h2 class="welcome-title" id="welcomeTitle">Start with one great letter.<br /><em>Apply everywhere.</em></h2>
+        <p class="welcome-lede">Upload the cover letter you're proud of. Application Station tailors it to every job you add — as tracked changes you review like an editor's markup, never a rewrite you can't see.</p>
+        <ol class="welcome-steps">
+          <li><span class="welcome-step-num">1</span><p><b>Bring your best letter.</b> Add your strongest cover letter as the base — plus your resume or a sample or two so the AI learns your voice.</p></li>
+          <li><span class="welcome-step-num">2</span><p><b>Paste job descriptions.</b> Each job gets its own tailored version, built from your real experience — never invented.</p></li>
+          <li><span class="welcome-step-num">3</span><p><b>Review, accept, export.</b> Approve the redlines you like and export ready-to-send .docx files, one by one or all at once.</p></li>
+        </ol>
+        <div class="welcome-actions">
+          <button id="welcomeTourBtn" type="button" class="welcome-primary">Show me around <span class="welcome-primary-sub">30 sec</span></button>
+          <button id="welcomeSkipBtn" type="button" class="welcome-skip">Skip — I'll explore myself</button>
+        </div>
+        <p class="welcome-foot">
+          <svg viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="1.5" y="5" width="9" height="6" rx="1.5" fill="currentColor" opacity="0.8" />
+            <path d="M3.5 5V3.5a2.5 2.5 0 0 1 5 0V5" stroke="currentColor" stroke-width="1.4" fill="none" />
+          </svg>
+          <span>Runs in your browser with your own free Gemini key. Documents go only to Google's Gemini API for tailoring — nowhere else.</span>
+        </p>
+      </div>
+      <div class="welcome-demo" aria-hidden="true">
+        <div class="demo-sheet demo-sheet--back1"></div>
+        <div class="demo-sheet demo-sheet--back2"></div>
+        <div class="demo-sheet demo-sheet--front">
+          <span class="demo-tag"><span class="demo-tag-dot"></span>Tracked changes</span>
+          <div class="demo-line demo-line--head"></div>
+          <div class="demo-line" style="width: 88%"></div>
+          <div class="demo-line" style="width: 94%"></div>
+          <div class="demo-row"><div class="demo-line" style="width: 26%"></div><div class="demo-del" style="width: 34%"></div><div class="demo-ins" style="--w: 30%"></div></div>
+          <div class="demo-line" style="width: 90%"></div>
+          <div class="demo-row"><div class="demo-ins" style="--w: 44%"></div><div class="demo-line" style="width: 38%"></div></div>
+          <div class="demo-line" style="width: 84%"></div>
+          <div class="demo-line" style="width: 56%"></div>
+          <span class="demo-accept">✓ Tailored for Acme</span>
+        </div>
+      </div>
+    </section>
+  </div>
   <div id="settingsModal" class="settings-modal" hidden>
     <div id="settingsBackdrop" class="settings-backdrop"></div>
     <section class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
@@ -225,34 +304,47 @@
           aria-label="Close settings">✕</button>
       </header>
 
-      <div class="settings-label-row">
-        <label class="field-label" for="apiKeyInput">Gemini API Key</label>
-        <a class="settings-help-link" href="https://youtu.be/RVGbLSVFtIk" target="_blank" rel="noopener noreferrer"
-          aria-label="Watch Gemini API key setup guide (opens in a new tab)"
-          title="How to get your Gemini API key">?</a>
-      </div>
-      <div class="settings-row">
-        <input id="apiKeyInput" type="password" placeholder="Gemini API key" />
-        <button id="saveApiKeyBtn" type="button" class="secondary-btn">Save Key</button>
-      </div>
-
-      <label class="field-label" for="modelSelect">Model</label>
-      <select id="modelSelect" aria-label="Gemini model"></select>
-
-      <label class="field-label">Edit Mode</label>
-      <div class="mode-toggle settings-mode-toggle" role="group" aria-label="Edit mode">
-        <button id="directModeBtn" type="button" class="mode-btn">Direct Edits</button>
-        <button id="trackModeBtn" type="button" class="mode-btn active">Track Changes</button>
+      <div class="settings-section">
+        <h3 class="settings-section-title">AI &amp; Model</h3>
+        <div class="settings-label-row">
+          <label class="field-label" for="apiKeyInput">Gemini API Key</label>
+          <span id="apiKeyValidationChip" class="settings-chip">Not validated</span>
+          <a class="settings-help-link" href="https://youtu.be/RVGbLSVFtIk" target="_blank" rel="noopener noreferrer"
+            aria-label="Watch Gemini API key setup guide (opens in a new tab)"
+            title="How to get your Gemini API key">?</a>
+        </div>
+        <div class="settings-row">
+          <input id="apiKeyInput" type="password" placeholder="Gemini API key" />
+          <button id="saveApiKeyBtn" type="button" class="secondary-btn">Save Key</button>
+        </div>
+        <p class="settings-helper">Stored only in this browser. Get a free key via the ? guide.</p>
+        <label class="field-label" for="modelSelect">Model</label>
+        <select id="modelSelect" aria-label="Gemini model"></select>
       </div>
 
-      <label class="field-label">Comments</label>
-      <label class="settings-checkbox-row" for="includeCommentsToggle">
-        <input id="includeCommentsToggle" type="checkbox" />
-        <span>Include reviewer comments explaining each change</span>
-      </label>
+      <div class="settings-section">
+        <h3 class="settings-section-title">Output</h3>
+        <label class="field-label">Edit Mode</label>
+        <div class="mode-toggle settings-mode-toggle" role="group" aria-label="Edit mode">
+          <button id="directModeBtn" type="button" class="mode-btn">Direct Edits</button>
+          <button id="trackModeBtn" type="button" class="mode-btn active">Track Changes</button>
+        </div>
+        <p class="settings-helper">Track Changes shows AI edits as Word redlines you approve. Direct Edits produces a clean final letter.</p>
+        <label class="field-label">Comments</label>
+        <label class="settings-checkbox-row" for="includeCommentsToggle">
+          <input id="includeCommentsToggle" type="checkbox" />
+          <span>Include reviewer comments explaining each change</span>
+        </label>
+      </div>
 
-      <label class="field-label">Onboarding</label>
-      <button id="onboardingBtn" type="button" class="secondary-btn">Open Quick Start Guide</button>
+      <div class="settings-section">
+        <h3 class="settings-section-title">Help &amp; Data</h3>
+        <div class="settings-button-stack">
+          <button id="onboardingBtn" type="button" class="secondary-btn">Replay Tutorial</button>
+          <button id="setupChecklistBtn" type="button" class="secondary-btn">Open Setup Checklist</button>
+          <button id="clearAllDataBtn" type="button" class="secondary-btn danger-btn">Clear All Data…</button>
+        </div>
+      </div>
 
       <label class="field-label"></label>
       <div class="settings-support-wrap">
@@ -265,6 +357,10 @@
   </div>
   <div id="onboardingModal" class="onboarding-modal" hidden>
     <div id="onboardingBackdrop" class="onboarding-backdrop"></div>
+    <button id="onboardingPillBtn" type="button" class="onboarding-pill" aria-expanded="false">
+      <span class="onboarding-pill-ring" aria-hidden="true"></span>
+      <span id="onboardingProgressText">Setup 0/4</span>
+    </button>
     <section class="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle">
       <header class="onboarding-head">
         <h2 id="onboardingTitle">Quick Start</h2>
@@ -294,6 +390,7 @@
       </ul>
 
       <p id="onboardingHint" class="muted onboarding-hint"></p>
+      <button id="onboardingTourBtn" type="button" class="welcome-skip onboarding-tour-btn">Show me around first</button>
 
       <div class="onboarding-actions">
         <button id="onboardingPrimaryBtn" type="button">Take Me To Next Step</button>
@@ -304,7 +401,7 @@
   <div id="toastHost" class="toast-host" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script type="module" src="./main.js?v=2026-03-19-2"></script>
+  <script type="module" src="./main.js?v=2026-07-06-4"></script>
 </body>
 
 </html>

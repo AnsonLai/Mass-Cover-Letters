@@ -255,9 +255,10 @@ export async function validateGeminiApiKey({
   }
 
   const resolvedModel = normalizeGeminiModel(model);
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(normalizedKey)}&pageSize=200`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200`;
   const response = await fetchWithResilience(fetchFn, endpoint, {
-    method: 'GET'
+    method: 'GET',
+    headers: { 'x-goog-api-key': normalizedKey }
   }, { timeoutMs: 30000 });
 
   if (!response.ok) {
@@ -353,6 +354,8 @@ function buildSystemPrompt({
     '- Use only provided paragraph references (P#).',
     '- Keep edits factual; do not invent credentials, but do adapt existing stories and experiences from the provided context to highlight relevance.',
     '- Keep total operations practical and targeted.',
+    '- Prefer several small, targeted redlines over one whole-paragraph rewrite. When only part of a paragraph changes, keep every unchanged sentence character-for-character identical in "modified".',
+    '- Never rewrite a paragraph merely to rephrase it; only edit where tailoring to this job adds real value.',
     '- If company/role are missing in input, infer them and return values in inferredCompany/inferredRole.',
     ...(shouldUpdateDateLine && todayDateText
       ? [`- If the document has a visible date line, update it to today's date: ${todayDateText}.`]
@@ -422,10 +425,10 @@ async function callGeminiGenerateContent({
   maxOutputTokens = 40960,
   fetchFn = fetch
 }) {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const response = await fetchWithResilience(fetchFn, endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': String(apiKey || '') },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
       systemInstruction: { parts: [{ text: systemPrompt }] },

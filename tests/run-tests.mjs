@@ -12,6 +12,7 @@ import {
   describeOperationFailure,
   summarizeOperationFailures,
   findOriginalSubstring,
+  diceSimilarity,
   reconcileOperationsWithParagraphs
 } from '../docx-engine.js';
 import { DEFAULT_GEMINI_MODEL } from '../constants.js';
@@ -19,6 +20,13 @@ import {
   formatJobDisplayName,
   getStatusLabel
 } from '../ui.js';
+import {
+  buildOutputFileName,
+  normalizePersistedJob
+} from '../main.js';
+import {
+  computePopoverPlacement
+} from '../tour.js';
 
 function run(name, fn) {
   try {
@@ -121,9 +129,116 @@ run('reconcileOperationsWithParagraphs leaves operations without a matching para
   assert.equal(op.target, 'untouched');
 });
 
+run('diceSimilarity basics', () => {
+  assert.equal(diceSimilarity('alpha beta gamma', 'alpha beta gamma'), 1);
+  assert.equal(diceSimilarity('alpha beta', 'zeta theta'), 0);
+});
+
+run('reconcileOperationsWithParagraphs re-anchors a lightly paraphrased target', () => {
+  const paragraphs = [
+    { index: 1, text: 'I enjoy unrelated work on infrastructure and reporting.' },
+    { index: 2, text: 'I led the Atlas migration for the payments team and shipped it two weeks early with zero downtime.' }
+  ];
+  const [op] = reconcileOperationsWithParagraphs([
+    {
+      type: 'redline',
+      targetRef: 1,
+      target: 'I led the Atlas migration for the payments team and shipped it two weeks early with no downtime.',
+      modified: 'I led the Atlas migration for the payments team, shipping two weeks early with zero downtime.'
+    }
+  ], paragraphs);
+
+  assert.equal(op.targetRef, 2);
+  assert.equal(op.target, paragraphs[1].text);
+});
+
+run('reconcileOperationsWithParagraphs refuses ambiguous re-anchoring', () => {
+  const paragraphs = [
+    { index: 1, text: 'I led the Atlas migration for the payments team and shipped it two weeks early.' },
+    { index: 2, text: 'I led the Atlas migration for the platform team and shipped it two weeks early.' }
+  ];
+  const [op] = reconcileOperationsWithParagraphs([
+    {
+      type: 'redline',
+      targetRef: 9,
+      target: 'I led the Atlas migration for the team and shipped it two weeks early.',
+      modified: 'I led the migration early.'
+    }
+  ], paragraphs);
+
+  assert.equal(op.targetRef, 9);
+  assert.equal(op.target, 'I led the Atlas migration for the team and shipped it two weeks early.');
+});
+
 run('formatJobDisplayName and getStatusLabel provide UI labels', () => {
   assert.equal(formatJobDisplayName({ company: 'Google', role: 'SWE' }), 'Google - SWE');
   assert.equal(getStatusLabel('tailoring'), 'Tailoring');
+});
+
+run('normalizePersistedJob coerces in-flight statuses to retry', () => {
+  assert.equal(normalizePersistedJob({ id: 'x', status: 'tailoring' }).status, 'retry');
+  assert.equal(normalizePersistedJob({ id: 'x', status: 'preparing' }).status, 'retry');
+  assert.equal(normalizePersistedJob({ id: 'x', status: 'applying' }).status, 'retry');
+  assert.equal(normalizePersistedJob({ id: 'x', status: 'done' }).status, 'done');
+  assert.equal(normalizePersistedJob({ id: 'x', status: 'queued' }).status, 'queued');
+  assert.equal(normalizePersistedJob({ id: 'x', status: 'retry' }).status, 'retry');
+});
+
+run('normalizePersistedJob restores generatedMode and hasAcceptBackup', () => {
+  const job = normalizePersistedJob({ id: 'x', status: 'done', generatedMode: 'direct', hasAcceptBackup: { coverLetter: true, resume: false } });
+  assert.equal(job.generatedMode, 'direct');
+  assert.equal(job.hasAcceptBackup.coverLetter, true);
+  assert.equal(job.hasAcceptBackup.resume, false);
+  // Legacy sessions default to track mode and no backups.
+  const legacy = normalizePersistedJob({ id: 'y', status: 'done' });
+  assert.equal(legacy.generatedMode, 'track');
+  assert.equal(legacy.hasAcceptBackup.coverLetter, false);
+});
+
+run('buildOutputFileName preserves mixed-case company tokens', () => {
+  const name = buildOutputFileName({ company: 'McKinsey & Company', role: 'iOS developer' }, new Date('2026-07-05'));
+  assert.match(name, /^McKinsey & Company - iOS Developer - Cover Letter - 072026\.docx$/);
+});
+
+run('buildOutputFileName title-cases fully-lowercase tokens', () => {
+  const name = buildOutputFileName({ company: 'acme corp', role: 'product manager' }, new Date('2026-07-05'));
+  assert.match(name, /^Acme Corp - Product Manager - Cover Letter - 072026\.docx$/);
+});
+
+run('computePopoverPlacement keeps preferred side when it fits', () => {
+  const placement = computePopoverPlacement(
+    { left: 100, top: 100, right: 200, bottom: 160, width: 100, height: 60 },
+    { width: 180, height: 120 },
+    { width: 700, height: 500 },
+    'right'
+  );
+  assert.equal(placement.side, 'right');
+  assert.equal(placement.left, 212);
+});
+
+run('computePopoverPlacement flips when target is at right edge', () => {
+  const placement = computePopoverPlacement(
+    { left: 620, top: 100, right: 690, bottom: 160, width: 70, height: 60 },
+    { width: 180, height: 120 },
+    { width: 700, height: 500 },
+    'right'
+  );
+  assert.equal(placement.side, 'left');
+  assert.equal(placement.left, 428);
+});
+
+run('computePopoverPlacement clamps inside tiny viewport', () => {
+  const placement = computePopoverPlacement(
+    { left: 180, top: 140, right: 220, bottom: 180, width: 40, height: 40 },
+    { width: 220, height: 140 },
+    { width: 240, height: 180 },
+    'right'
+  );
+  assert.equal(placement.side, 'clamped');
+  assert.ok(placement.left >= 12);
+  assert.ok(placement.top >= 12);
+  assert.ok(placement.left <= 28);
+  assert.ok(placement.top <= 28);
 });
 
 if (process.exitCode) {
