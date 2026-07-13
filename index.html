@@ -22,7 +22,7 @@
   <meta name="googlebot" content="index, follow" />
   <meta name="author" content="Application Station" />
   <meta name="application-name" content="Application Station" />
-  <meta name="theme-color" content="#0f231d" />
+  <meta name="theme-color" content="#F4FAF7" />
   <link rel="canonical" href="https://ansonlai.github.io/Mass-Cover-Letters/" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Application Station" />
@@ -65,7 +65,8 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+  <link
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap"
     rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.css" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
@@ -226,8 +227,13 @@
         </section>
 
         <section id="recommendationCard" class="recommendation-card" hidden>
-          <div class="recommendation-heading">Application Station AI Recommendation</div>
-          <p id="recommendationText">No recommendation yet.</p>
+          <div class="recommendation-body">
+            <div class="as-mascot reco-mascot" data-mood="happy" aria-hidden="true"></div>
+            <div>
+              <div class="recommendation-heading">Quill's Take</div>
+              <p id="recommendationText">No recommendation yet.</p>
+            </div>
+          </div>
         </section>
       </section>
     </main>
@@ -292,6 +298,7 @@
           <div class="demo-line" style="width: 56%"></div>
           <span class="demo-accept">✓ Tailored for Acme</span>
         </div>
+        <div class="as-mascot welcome-mascot" data-mood="hello"></div>
       </div>
     </section>
   </div>
@@ -399,9 +406,14 @@
     </section>
   </div>
   <div id="toastHost" class="toast-host" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="mascotDock" class="mascot-dock" aria-live="polite" hidden>
+    <p id="mascotBubble" class="mascot-bubble" hidden></p>
+    <div id="mascotAvatar" class="as-mascot" data-mood="happy" aria-hidden="true"></div>
+  </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script type="module" src="./main.js?v=2026-07-06-4"></script>
+  <script src="./mascot.js?v=2026-07-12-1"></script>
+  <script type="module" src="./main.js?v=2026-07-12-1"></script>
 </body>
 
 </html>

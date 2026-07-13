@@ -97,6 +97,64 @@ function createAppState() {
   };
 }
 
+/* ---------------------------------------------------------------------------
+   Quill, the mascot. The SVG is injected by mascot.js (classic script); moods
+   are pure CSS (styles.css "QUILL MASCOT" section). This block only decides
+   WHICH mood fits the app state and what the speech bubble says.
+   Personality rule: Quill never frowns — errors and empty states get 'soft'.
+--------------------------------------------------------------------------- */
+const mascot = {
+  dock: null,
+  avatar: null,
+  bubble: null,
+  revertTimer: null
+};
+
+function initMascot() {
+  mascot.dock = document.getElementById('mascotDock');
+  mascot.avatar = document.getElementById('mascotAvatar');
+  mascot.bubble = document.getElementById('mascotBubble');
+  if (typeof globalThis.asMountMascots === 'function') globalThis.asMountMascots();
+}
+
+function mascotIdleMood() {
+  return state.isRunning ? 'writing' : 'happy';
+}
+
+function setMascotMood(mood, message = '', revertMs = 6000) {
+  if (!mascot.avatar) return;
+  if (mascot.revertTimer) {
+    clearTimeout(mascot.revertTimer);
+    mascot.revertTimer = null;
+  }
+  mascot.avatar.dataset.mood = mood;
+  if (mascot.bubble) {
+    mascot.bubble.textContent = String(message || '');
+    mascot.bubble.hidden = !message;
+    if (message) {
+      // Retrigger the bubble's pop-in animation on repeat messages.
+      mascot.bubble.style.animation = 'none';
+      void mascot.bubble.offsetWidth;
+      mascot.bubble.style.animation = '';
+    }
+  }
+  if (revertMs > 0) {
+    mascot.revertTimer = setTimeout(() => {
+      mascot.revertTimer = null;
+      if (!mascot.avatar) return;
+      mascot.avatar.dataset.mood = mascotIdleMood();
+      if (mascot.bubble) mascot.bubble.hidden = true;
+    }, revertMs);
+  }
+}
+
+function refreshMascotDock() {
+  if (!mascot.dock) return;
+  // Quill greets center stage in the empty preview; once a base letter is in,
+  // he pops into his corner dock and stays.
+  mascot.dock.hidden = !state.baseDocument.fileName;
+}
+
 function createJobId() {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
@@ -1025,6 +1083,16 @@ function renderUi(refs) {
     ? `${state.sampleDocuments.length} sample letter${state.sampleDocuments.length === 1 ? '' : 's'} loaded.`
     : 'No sample letters uploaded.';
 
+  // Uploaded files render as mint chips; their dropzones relax to solid cards.
+  refs.baseFileMeta.classList.toggle('has-file', Boolean(state.baseDocument.fileName));
+  refs.resumeFileMeta.classList.toggle('has-file', Boolean(state.resumeDocument.fileName));
+  refs.samplesFileMeta.classList.toggle('has-file', state.sampleDocuments.length > 0);
+  refs.baseDropZone.classList.toggle('has-file', Boolean(state.baseDocument.fileName));
+  refs.resumeDropZone.classList.toggle('has-file', Boolean(state.resumeDocument.fileName));
+  refs.samplesDropZone.classList.toggle('has-file', state.sampleDocuments.length > 0);
+
+  refreshMascotDock();
+
   refs.previewResumeBtn.disabled = !canPreviewResume;
 
   refreshControls(refs);
@@ -1219,15 +1287,22 @@ function createPreviewEmptyState(refs, isResumePreview) {
   const empty = document.createElement('div');
   empty.className = 'preview-empty-state';
 
-  const logo = document.createElement('img');
-  logo.src = './assets/logo-quill.svg?v=2026-06-26-emerald';
-  logo.alt = '';
-  logo.setAttribute('aria-hidden', 'true');
+  // Quill greets center stage until the first document arrives.
+  const mascotEl = document.createElement('div');
+  mascotEl.className = 'as-mascot preview-empty-mascot';
+  mascotEl.dataset.mood = 'hello';
+  mascotEl.setAttribute('aria-hidden', 'true');
+
+  const heading = document.createElement('p');
+  heading.className = 'preview-empty-title';
+  heading.textContent = isResumePreview
+    ? 'Add your resume'
+    : 'Start with one great letter.';
 
   const text = document.createElement('p');
   text.textContent = isResumePreview
     ? 'Upload your resume to see it here'
-    : 'Upload your base cover letter to see it here';
+    : "Upload the cover letter you're proud of — Quill tailors it to every job you add.";
 
   const button = document.createElement('button');
   button.type = 'button';
@@ -1237,7 +1312,8 @@ function createPreviewEmptyState(refs, isResumePreview) {
     else refs.baseFileInput.click();
   });
 
-  empty.append(logo, text, button);
+  empty.append(mascotEl, heading, text, button);
+  if (typeof globalThis.asMountMascots === 'function') globalThis.asMountMascots(empty);
   return empty;
 }
 
@@ -1362,6 +1438,7 @@ async function setBaseFile(refs, file) {
   setStatusBanner(refs, `Loaded base cover letter: ${picked.name}`, 'success');
   warnIfDocumentWillBeTruncated(refs, parsed.fullText || getContextText(parsed.paragraphs), MAX_BASE_LETTER_CHARS);
   renderUi(refs);
+  setMascotMood('excited', 'Great letter! Now paste a job description.');
   await renderSelectedPreview(refs);
 }
 
@@ -1385,6 +1462,7 @@ async function setResumeFile(refs, file) {
   setStatusBanner(refs, `Loaded resume source: ${picked.name}`, 'success');
   warnIfDocumentWillBeTruncated(refs, getContextText(paragraphs), MAX_CONTEXT_CHARS);
   renderUi(refs);
+  setMascotMood('excited', 'Resume in — more real experience to draw from!');
 }
 
 async function addSampleFiles(refs, files) {
@@ -1417,6 +1495,7 @@ async function addSampleFiles(refs, files) {
     showTruncationWarning(refs, MAX_CONTEXT_CHARS);
   }
   renderUi(refs);
+  setMascotMood('happy', "Nice — I'll study your voice.");
 }
 
 async function clearSampleLetters(refs) {
@@ -1460,6 +1539,7 @@ async function addSingleJobFromInputs(refs) {
 
   setStatusBanner(refs, `Added job: ${formatJobDisplayName(newJob)}`, 'success');
   renderUi(refs);
+  setMascotMood('happy', 'Added! Queue up more, or hit Generate.');
   await renderSelectedPreview(refs);
 }
 
@@ -1624,8 +1704,10 @@ async function acceptAllPreviewRedlines(refs) {
       `Accepted ${acceptance.acceptedCount} tracked change${acceptance.acceptedCount === 1 ? '' : 's'} in the ${isResumePreview ? 'resume' : 'cover letter'}.`,
       'success'
     );
+    setMascotMood('cheer', 'Looks sharp. Ready to export.');
   } catch (error) {
     setStatusBanner(refs, `Accept-all failed: ${error?.message || String(error)}`, 'error');
+    setMascotMood('soft', "Hmm, that didn't take — try once more.");
   }
 }
 
@@ -1837,6 +1919,7 @@ async function runJob(job, refs, progressContext = {}) {
     job.hasAcceptBackup = { coverLetter: false, resume: false };
     renderUi(refs);
     updateRunProgress(refs, job, 'Preparing', progressContext);
+    setMascotMood('writing', `Tailoring ${formatJobDisplayName(job)}…`, 0);
 
     coverLetterZip = await loadDocxZipFromBlob(baseBlob);
     const baseParagraphs = Array.isArray(state.baseDocument.paragraphs) && state.baseDocument.paragraphs.length > 0
@@ -2019,6 +2102,11 @@ async function runJob(job, refs, progressContext = {}) {
     const outcomeMessage = `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).${partialNote}`;
     if (state.isRunning) showToast(refs, outcomeMessage, statusLevel, statusLevel === 'warn' ? 3600 : 2600);
     else setStatusBanner(refs, outcomeMessage, statusLevel);
+    if (job.status === 'partial') {
+      setMascotMood('soft', 'Done, though a few edits were skipped.');
+    } else {
+      setMascotMood('cheer', 'Done! Review my redlines when ready.');
+    }
   } catch (error) {
     job.status = 'failed';
     job.runtime.error = error?.message || String(error);
@@ -2026,6 +2114,7 @@ async function runJob(job, refs, progressContext = {}) {
     const failureMessage = `Failed ${formatJobDisplayName(job)}: ${job.runtime.error}`;
     if (state.isRunning) showToast(refs, failureMessage, 'error', 5000);
     else setStatusBanner(refs, failureMessage, 'error');
+    setMascotMood('soft', "That one didn't work — let's retry together.");
   }
 
   await persistSessionState();
@@ -2133,6 +2222,7 @@ async function runAllJobs(refs) {
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
     setStatusBanner(refs, 'Batch generation complete.', 'success');
+    setMascotMood('cheer', 'All letters tailored!');
   } finally {
     state.isRunning = false;
     hideProgressStrip(refs);
@@ -2160,12 +2250,14 @@ async function downloadSelectedJob(refs) {
     const bundleName = buildJobBundleName(selectedJob);
     downloadBlob(archiveBlob, bundleName);
     setStatusBanner(refs, `Exported ${bundleName}`, 'success');
+    setMascotMood('cheer', 'Off it goes — good luck out there!');
     return;
   }
 
   const outputName = buildOutputFileName(selectedJob);
   downloadBlob(coverLetterBlob, outputName);
   setStatusBanner(refs, `Exported ${outputName}`, 'success');
+  setMascotMood('cheer', 'Off it goes — good luck out there!');
 }
 
 async function downloadAllJobs(refs) {
@@ -2190,6 +2282,7 @@ async function downloadAllJobs(refs) {
   const archiveBlob = await createArchiveBlob(files);
   downloadBlob(archiveBlob, 'cover-letters-batch.zip');
   setStatusBanner(refs, `Exported ${files.length} tailored file(s).`, 'success');
+  setMascotMood('cheer', `${files.length} letter${files.length === 1 ? '' : 's'} out the door — good luck!`);
 }
 
 function wireDropZone(refs, dropZoneKey, fileInputKey, onFiles) {
@@ -2235,6 +2328,7 @@ function wireDropZone(refs, dropZoneKey, fileInputKey, onFiles) {
 
 async function init() {
   const refs = getUiRefs();
+  initMascot();
   state.store = await createDocumentStore();
 
   console.info(`[Application Station] App version ${APP_VERSION}`);
