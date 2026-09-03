@@ -56,9 +56,11 @@ test('normalizeGeminiModel keeps supported values and falls back for unknown val
 test('validateGeminiApiKey performs a lightweight Gemini API call', async () => {
   let capturedUrl = '';
   let capturedMethod = '';
+  let capturedHeaders = {};
   const fetchFn = async (url, init = {}) => {
     capturedUrl = String(url || '');
     capturedMethod = String(init?.method || '');
+    capturedHeaders = init?.headers || {};
     return {
       ok: true,
       async json() {
@@ -82,7 +84,8 @@ test('validateGeminiApiKey performs a lightweight Gemini API call', async () => 
   assert.equal(result.selectedModelAvailable, true);
   assert.equal(result.availableModelCount, 2);
   assert.equal(capturedMethod, 'GET');
-  assert.match(capturedUrl, /\/v1beta\/models\?key=AIza-test-key/i);
+  assert.match(capturedUrl, /\/v1beta\/models\?pageSize=200/i);
+  assert.equal(capturedHeaders['x-goog-api-key'], 'AIza-test-key');
 });
 
 test('validateGeminiApiKey retries transient 503 responses before succeeding', async () => {

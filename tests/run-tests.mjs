@@ -88,15 +88,21 @@ run('describeOperationFailure distinguishes engine errors from missing targets',
     describeOperationFailure({ type: 'highlight', targetRef: 0, success: false, error: null }),
     'highlight on unknown paragraph: target text was not found in the document'
   );
+  assert.equal(
+    describeOperationFailure({ type: 'redline', targetRef: 3, success: false, error: 'Original text was not found in the supplied OOXML.' }),
+    'redline on P3: Original text was not found in the supplied OOXML.'
+  );
 });
 
-run('summarizeOperationFailures keeps only unsuccessful operations', () => {
+run('summarizeOperationFailures keeps only unsuccessful operations and preserves structured error text', () => {
   const failures = summarizeOperationFailures([
     { type: 'redline', targetRef: 1, success: true },
-    { type: 'redline', targetRef: 2, success: false, error: null }
+    { type: 'redline', targetRef: 2, success: false, error: null },
+    { type: 'comment', targetRef: 5, success: false, error: 'PARTIAL_TARGET: Contiguous range mismatch' }
   ]);
-  assert.equal(failures.length, 1);
+  assert.equal(failures.length, 2);
   assert.match(failures[0], /redline on P2/);
+  assert.equal(failures[1], 'comment on P5: PARTIAL_TARGET: Contiguous range mismatch');
 });
 
 run('findOriginalSubstring recovers exact text past smart quotes and spacing', () => {

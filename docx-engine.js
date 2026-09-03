@@ -4,7 +4,7 @@ const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DEFAULT_HIGHLIGHT = 'yellow';
 
 let cachedDepsPromise = null;
-const DOCX_REDLINE_VERSION = '0.2.0';
+const DOCX_REDLINE_VERSION = '0.4.0';
 
 function getLocalName(node) {
   return String(node?.localName || node?.nodeName || '').replace(/^.*:/, '');
@@ -301,13 +301,13 @@ async function loadEngineDependencies(log = () => { }) {
     const baseModule = await tryImportFirst([
       `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/+esm`,
       './legal-skills-drafter/node_modules/@ansonlai/docx-redline-js/index.js',
-      'https://esm.sh/@ansonlai/docx-redline-js'
+      `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}`
     ]);
 
     const runnerModule = await tryImportFirst([
       `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/services/standalone-operation-runner.js/+esm`,
       './legal-skills-drafter/node_modules/@ansonlai/docx-redline-js/services/standalone-operation-runner.js',
-      'https://esm.sh/@ansonlai/docx-redline-js/services/standalone-operation-runner.js'
+      `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/services/standalone-operation-runner.js`
     ]);
 
     if (typeof baseModule.configureLogger === 'function') {
@@ -440,11 +440,14 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
     try {
       const step = await deps.applyOperationToDocumentXml(documentXml, op, author, runtimeContext, {
         generateRedlines: Boolean(generateRedlines),
+        sanitizeInput: true,
         onInfo: message => log(String(message)),
         onWarn: message => log(`[WARN] ${String(message)}`)
       });
 
-      documentXml = step.documentXml;
+      if (typeof step?.documentXml === 'string') {
+        documentXml = step.documentXml;
+      }
       if (step.numberingXml) capturedNumberingXml.push(step.numberingXml);
       if (step.commentsXml) capturedCommentsXml.push(step.commentsXml);
       if (Array.isArray(step.warnings)) {
@@ -453,7 +456,15 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
         }
       }
 
-      results.push({ ...op, success: Boolean(step.hasChanges), error: null });
+      const stepError = step.error
+        ? (step.error.message || step.error.code || String(step.error))
+        : (step.status === 'error' ? 'Operation returned error status' : null);
+
+      results.push({
+        ...op,
+        success: Boolean(step.hasChanges) && !stepError,
+        error: stepError
+      });
     } catch (error) {
       results.push({ ...op, success: false, error: error?.message || String(error) });
     }
@@ -592,6 +603,11 @@ export async function acceptAllTrackedChangesInZip({
     : { author: String(author || '').trim() };
   const result = deps.acceptTrackedChangesInOoxml(documentXml, options);
   const warnings = Array.isArray(result?.warnings) ? result.warnings.map(item => String(item)) : [];
+  if (result?.error) {
+    const errorMsg = result.error.message || String(result.error);
+    warnings.push(errorMsg);
+    onLog(`[ERROR] ${errorMsg}`);
+  }
 
   for (const warning of warnings) {
     onLog(`[WARN] ${warning}`);
