@@ -7,6 +7,8 @@ import {
   parseTailoringPayload
 } from '../cover-letter-ai.js';
 import {
+  DOCX_REDLINE_VERSION,
+  extractCanonicalParagraphText,
   normalizeAndFilterOperations,
   chunkOperations,
   describeOperationFailure,
@@ -79,6 +81,10 @@ run('chunkOperations splits operation list into fixed-size batches', () => {
   assert.deepEqual(chunks[0], [1, 2]);
 });
 
+run('DOCX_REDLINE_VERSION is updated to 0.5.0', () => {
+  assert.equal(DOCX_REDLINE_VERSION, '0.5.0');
+});
+
 run('describeOperationFailure distinguishes engine errors from missing targets', () => {
   assert.equal(
     describeOperationFailure({ type: 'redline', targetRef: 4, success: false, error: 'boom' }),
@@ -92,6 +98,57 @@ run('describeOperationFailure distinguishes engine errors from missing targets',
     describeOperationFailure({ type: 'redline', targetRef: 3, success: false, error: 'Original text was not found in the supplied OOXML.' }),
     'redline on P3: Original text was not found in the supplied OOXML.'
   );
+  assert.equal(
+    describeOperationFailure({
+      type: 'comment',
+      targetRef: 4,
+      success: false,
+      error: { code: 'ANCHOR_NOT_FOUND', message: 'Comment anchor was not found in target paragraph.' }
+    }),
+    'comment on P4: Comment anchor was not found in target paragraph.'
+  );
+  assert.equal(
+    describeOperationFailure({
+      type: 'redline',
+      targetRef: 2,
+      success: false,
+      error: { code: 'COMMENTED_CONTENT_DELETE' }
+    }),
+    'redline on P2: COMMENTED_CONTENT_DELETE'
+  );
+});
+
+run('extractCanonicalParagraphText evaluates canonical accepted text excluding deletions and preserving breaks', () => {
+  function el(tag, children = [], text = '') {
+    const node = {
+      nodeType: 1,
+      localName: tag,
+      namespaceURI: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+      childNodes: children,
+      textContent: text,
+      parentNode: null
+    };
+    for (const child of children) child.parentNode = node;
+    return node;
+  }
+
+  const p = el('p', [
+    el('r', [el('t', [], 'Dear Hiring Team,')]),
+    el('del', [el('r', [el('delText', [], ' I got let go.')])]),
+    el('ins', [el('r', [el('t', [], ' I am excited to apply.')])]),
+    el('r', [el('tab')]),
+    el('r', [el('t', [], 'Role:')]),
+    el('r', [el('noBreakHyphen')]),
+    el('r', [el('t', [], 'Staff')]),
+    el('r', [el('softHyphen')]),
+    el('r', [el('t', [], 'Engineer')])
+  ]);
+
+  const accepted = extractCanonicalParagraphText(p, { revisionView: 'accepted' });
+  assert.equal(accepted, 'Dear Hiring Team, I am excited to apply.\tRole:‑Staff\xadEngineer');
+
+  const rejected = extractCanonicalParagraphText(p, { revisionView: 'rejected' });
+  assert.equal(rejected, 'Dear Hiring Team, I got let go.\tRole:‑Staff\xadEngineer');
 });
 
 run('summarizeOperationFailures keeps only unsuccessful operations and preserves structured error text', () => {

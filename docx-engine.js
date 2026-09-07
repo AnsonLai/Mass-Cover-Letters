@@ -4,7 +4,7 @@ const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DEFAULT_HIGHLIGHT = 'yellow';
 
 let cachedDepsPromise = null;
-const DOCX_REDLINE_VERSION = '0.4.0';
+export const DOCX_REDLINE_VERSION = '0.5.0';
 
 function getLocalName(node) {
   return String(node?.localName || node?.nodeName || '').replace(/^.*:/, '');
@@ -300,12 +300,14 @@ async function loadEngineDependencies(log = () => { }) {
   cachedDepsPromise = (async () => {
     const baseModule = await tryImportFirst([
       `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/+esm`,
+      '../Docx Redline JS/index.js',
       './legal-skills-drafter/node_modules/@ansonlai/docx-redline-js/index.js',
       `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}`
     ]);
 
     const runnerModule = await tryImportFirst([
       `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/services/standalone-operation-runner.js/+esm`,
+      '../Docx Redline JS/services/standalone-operation-runner.js',
       './legal-skills-drafter/node_modules/@ansonlai/docx-redline-js/services/standalone-operation-runner.js',
       `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/services/standalone-operation-runner.js`
     ]);
@@ -338,13 +340,63 @@ function getParagraphNodes(body) {
   return Array.from(body.getElementsByTagName('*')).filter(node => getLocalName(node) === 'p');
 }
 
-function extractTextFromParagraph(paragraph) {
+/**
+ * Returns whether an XML node contributes to the selected revision view.
+ * Excludes deleted/moveFrom elements in 'accepted' view, and inserted/moveTo elements in 'rejected' view.
+ */
+function isNodeVisibleInRevisionView(node, boundary = null, revisionView = 'accepted') {
+  const view = revisionView === 'current' ? 'accepted' : revisionView;
+  let cursor = node;
+  while (cursor && cursor !== boundary) {
+    const name = getLocalName(cursor);
+    if (view === 'accepted' && (name === 'del' || name === 'moveFrom')) return false;
+    if (view === 'rejected' && (name === 'ins' || name === 'moveTo')) return false;
+    cursor = cursor.parentNode;
+  }
+  return true;
+}
+
+/**
+ * Extracts canonical paragraph text matching v0.5.0 engine semantics:
+ * evaluates accepted/current document view, excluding deleted and w:moveFrom runs
+ * while preserving structural breaks (tabs, breaks, non-breaking hyphens, soft hyphens).
+ */
+export function extractCanonicalParagraphText(paragraph, options = {}) {
   if (!paragraph) return '';
-  const textNodes = paragraph.getElementsByTagNameNS(NS_W, 't');
-  const nodes = textNodes.length > 0
-    ? Array.from(textNodes)
-    : Array.from(paragraph.getElementsByTagName('*')).filter(node => getLocalName(node) === 't');
-  return nodes.map(node => node.textContent || '').join('');
+  const revisionView = options.revisionView === 'current' ? 'accepted' : (options.revisionView || 'accepted');
+  let text = '';
+
+  function walk(node) {
+    for (const child of Array.from(node?.childNodes || [])) {
+      if (child?.nodeType !== 1) continue;
+      if (child.namespaceURI && child.namespaceURI !== NS_W) continue;
+      if (!isNodeVisibleInRevisionView(child, paragraph, revisionView)) continue;
+
+      const name = getLocalName(child);
+      if (name === 'pPr' || name === 'rPr') continue;
+
+      if (name === 't') {
+        text += child.textContent || '';
+      } else if (name === 'delText') {
+        if (revisionView === 'rejected') {
+          text += child.textContent || '';
+        }
+      } else if (name === 'tab') {
+        text += '\t';
+      } else if (name === 'br' || name === 'cr') {
+        text += '\n';
+      } else if (name === 'noBreakHyphen') {
+        text += '\u2011';
+      } else if (name === 'softHyphen') {
+        text += '\u00ad';
+      } else {
+        walk(child);
+      }
+    }
+  }
+
+  walk(paragraph);
+  return text;
 }
 
 export function extractParagraphsFromDocumentXml(documentXml) {
@@ -357,7 +409,7 @@ export function extractParagraphsFromDocumentXml(documentXml) {
 
   const paragraphs = [];
   for (const paragraph of getParagraphNodes(body)) {
-    const text = extractTextFromParagraph(paragraph).trim();
+    const text = extractCanonicalParagraphText(paragraph).trim();
     if (!text) continue;
     paragraphs.push({
       index: paragraphs.length + 1,
@@ -410,17 +462,21 @@ function normalizeDocumentXml(xml, deps, log) {
   return serializer.serializeToString(xmlDoc);
 }
 
-// Engine state (numbering-ID allocation, list continuity, table-redline dedup) must persist
+// Engine state (numbering-ID allocation, list continuity, table-redline dedup, comment context) must persist
 // across every operation in a document pass — not reset per batch — or numbered lists and
-// repeated structural edits collide. Built once from the document's initial numbering.xml.
+// repeated structural edits collide. Built once from the document's initial parts.
 async function createEngineRuntimeContext(zip, deps) {
   const existingNumberingXml = await zip.file('word/numbering.xml')?.async('string');
+  const existingCommentsXml = await zip.file('word/comments.xml')?.async('string');
+  const existingCommentsExtendedXml = await zip.file('word/commentsExtended.xml')?.async('string');
   const numberingIdState = typeof deps.createDynamicNumberingIdState === 'function'
     ? deps.createDynamicNumberingIdState(existingNumberingXml || '', { minId: 1, maxPreferred: 32767 })
     : null;
 
   return {
     numberingIdState,
+    commentsXml: existingCommentsXml || null,
+    commentsExtendedXml: existingCommentsExtendedXml || null,
     listFallbackSharedNumIdByKey: new Map(),
     listFallbackSequenceState: { explicitByNumberingKey: new Map() },
     tableStructuralRedlineKeys: new Set()
@@ -434,6 +490,7 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
 
   const capturedNumberingXml = [];
   const capturedCommentsXml = [];
+  const capturedCommentsExtendedXml = [];
   const results = [];
 
   for (const op of operations) {
@@ -450,6 +507,7 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
       }
       if (step.numberingXml) capturedNumberingXml.push(step.numberingXml);
       if (step.commentsXml) capturedCommentsXml.push(step.commentsXml);
+      if (step.commentsExtendedXml) capturedCommentsExtendedXml.push(step.commentsExtendedXml);
       if (Array.isArray(step.warnings)) {
         for (const warning of step.warnings) {
           log(`[WARN] ${String(warning)}`);
@@ -457,12 +515,15 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
       }
 
       const stepError = step.error
-        ? (step.error.message || step.error.code || String(step.error))
+        ? (typeof step.error === 'object'
+          ? (step.error.message || step.error.code || JSON.stringify(step.error))
+          : String(step.error))
         : (step.status === 'error' ? 'Operation returned error status' : null);
 
       results.push({
         ...op,
         success: Boolean(step.hasChanges) && !stepError,
+        receipt: step.receipt || null,
         error: stepError
       });
     } catch (error) {
@@ -487,6 +548,14 @@ async function applyOperationsBatch(zip, operations, { author, log, generateRedl
   if (typeof deps.ensureCommentsArtifactsInZip === 'function' && capturedCommentsXml.length > 0) {
     for (const commentsXml of capturedCommentsXml) {
       await deps.ensureCommentsArtifactsInZip(zip, commentsXml, {
+        onInfo: message => log(String(message))
+      });
+    }
+  }
+
+  if (typeof deps.ensureCommentsExtendedArtifactsInZip === 'function' && capturedCommentsExtendedXml.length > 0) {
+    for (const commentsExtendedXml of capturedCommentsExtendedXml) {
+      await deps.ensureCommentsExtendedArtifactsInZip(zip, commentsExtendedXml, {
         onInfo: message => log(String(message))
       });
     }
@@ -526,9 +595,14 @@ export function describeOperationFailure(result) {
     ? `P${result.targetRef}`
     : 'unknown paragraph';
   const type = String(result?.type || 'operation').trim() || 'operation';
-  const reason = result?.error
-    ? String(result.error)
-    : 'target text was not found in the document';
+  let reason = 'target text was not found in the document';
+  if (result?.error) {
+    if (typeof result.error === 'object') {
+      reason = result.error.message || result.error.code || JSON.stringify(result.error);
+    } else {
+      reason = String(result.error);
+    }
+  }
   return `${type} on ${ref}: ${reason}`;
 }
 
