@@ -24,8 +24,8 @@ function makeMockElement(tag, children = [], text = '') {
   return node;
 }
 
-test('DOCX_REDLINE_VERSION is updated to 0.5.0', () => {
-  assert.equal(DOCX_REDLINE_VERSION, '0.5.0');
+test('DOCX_REDLINE_VERSION is updated to 0.8.0', () => {
+  assert.equal(DOCX_REDLINE_VERSION, '0.8.0');
 });
 
 test('normalizeAndFilterOperations strips paragraph marker prefixes and invalid rows', () => {

@@ -4,7 +4,7 @@ const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DEFAULT_HIGHLIGHT = 'yellow';
 
 let cachedDepsPromise = null;
-export const DOCX_REDLINE_VERSION = '0.5.0';
+export const DOCX_REDLINE_VERSION = '0.8.0';
 
 function getLocalName(node) {
   return String(node?.localName || node?.nodeName || '').replace(/^.*:/, '');
@@ -94,7 +94,7 @@ export function normalizeAndFilterOperations(rawOperations) {
         return Boolean(op.textToHighlight);
       }
       if (op.type === 'redline') {
-        return Boolean(op.modified);
+        return Boolean(op.modified || (Array.isArray(op.replacements) && op.replacements.length > 0));
       }
       return false;
     });
@@ -105,10 +105,10 @@ export function normalizeAndFilterOperations(rawOperations) {
 // text, but its copy often differs from the document byte-for-byte, so the engine fails to
 // locate it. These helpers reconcile model-provided targets back to the document's real text.
 const TYPOGRAPHIC_REPLACEMENTS = new Map([
-  ['‘', "'"], ['’', "'"], ['‛', "'"], ['′', "'"],
-  ['“', '"'], ['”', '"'], ['‟', '"'], ['″', '"'],
-  ['–', '-'], ['—', '-'], ['−', '-'],
-  [' ', ' '], [' ', ' '], [' ', ' ']
+  ['\u2018', "'"], ['\u2019', "'"], ['\u201b', "'"], ['\u2032', "'"],
+  ['\u201c', '"'], ['\u201d', '"'], ['\u201f', '"'], ['\u2033', '"'],
+  ['\u2013', '-'], ['\u2014', '-'], ['\u2212', '-'],
+  ['\u00a0', ' '], ['\u2007', ' '], ['\u202f', ' ']
 ]);
 
 // Build a whitespace-collapsed, typography-normalized string plus a map from each
@@ -272,15 +272,6 @@ export function chunkOperations(items, chunkSize) {
   return out;
 }
 
-async function getJsZipCtor() {
-  if (globalThis.JSZip) return globalThis.JSZip;
-  const module = await import('https://esm.sh/jszip@3.10.1');
-  const ctor = module?.default || module?.JSZip || module;
-  if (!ctor) throw new Error('Unable to load JSZip');
-  globalThis.JSZip = ctor;
-  return ctor;
-}
-
 async function tryImportFirst(urls) {
   let lastError = null;
   for (const url of urls) {
@@ -294,50 +285,44 @@ async function tryImportFirst(urls) {
   throw new Error('No import URL candidates provided');
 }
 
-async function loadEngineDependencies(log = () => { }) {
+export async function loadEngineDependencies(log = () => { }) {
   if (cachedDepsPromise) return cachedDepsPromise;
 
   cachedDepsPromise = (async () => {
-    const baseModule = await tryImportFirst([
-      `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/+esm`,
-      '../Docx Redline JS/index.js',
-      './legal-skills-drafter/node_modules/@ansonlai/docx-redline-js/index.js',
-      `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}`
-    ]);
+    const isNode = typeof process !== 'undefined' && process?.versions?.node;
+    const candidates = [];
 
-    const runnerModule = await tryImportFirst([
-      `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/services/standalone-operation-runner.js/+esm`,
-      '../Docx Redline JS/services/standalone-operation-runner.js',
-      './legal-skills-drafter/node_modules/@ansonlai/docx-redline-js/services/standalone-operation-runner.js',
-      `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/services/standalone-operation-runner.js`
-    ]);
+    // Local / Node file paths
+    if (isNode) {
+      candidates.push(
+        './scratch/docx-redline.bundle.js',
+        '../Docx Redline JS/dist/docx-redline.bundle.js',
+        '../Docx Redline JS/index.js',
+        '@ansonlai/docx-redline-js/bundle',
+        '@ansonlai/docx-redline-js'
+      );
+    }
 
-    if (typeof baseModule.configureLogger === 'function') {
-      baseModule.configureLogger({
+    // Canonical CDN URLs (Zero-dependency standalone v0.8.0 bundle)
+    candidates.push(
+      `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/dist/docx-redline.bundle.js`,
+      `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/dist/docx-redline.bundle.js`
+    );
+
+    const module = await tryImportFirst(candidates);
+
+    if (typeof module.configureLogger === 'function') {
+      module.configureLogger({
         log: (...parts) => log(parts.join(' ')),
         warn: (...parts) => log(`[WARN] ${parts.join(' ')}`),
         error: (...parts) => log(`[ERROR] ${parts.join(' ')}`)
       });
     }
 
-    if (typeof runnerModule.applyOperationToDocumentXml !== 'function') {
-      throw new Error('Loaded docx runner module does not export applyOperationToDocumentXml');
-    }
-
-    return {
-      ...baseModule,
-      applyOperationToDocumentXml: runnerModule.applyOperationToDocumentXml
-    };
+    return module;
   })();
 
   return cachedDepsPromise;
-}
-
-function getParagraphNodes(body) {
-  if (!body) return [];
-  const namespaced = body.getElementsByTagNameNS(NS_W, 'p');
-  if (namespaced.length > 0) return Array.from(namespaced);
-  return Array.from(body.getElementsByTagName('*')).filter(node => getLocalName(node) === 'p');
 }
 
 /**
@@ -357,7 +342,7 @@ function isNodeVisibleInRevisionView(node, boundary = null, revisionView = 'acce
 }
 
 /**
- * Extracts canonical paragraph text matching v0.5.0 engine semantics:
+ * Extracts canonical paragraph text matching OOXML engine semantics:
  * evaluates accepted/current document view, excluding deleted and w:moveFrom runs
  * while preserving structural breaks (tabs, breaks, non-breaking hyphens, soft hyphens).
  */
@@ -399,6 +384,13 @@ export function extractCanonicalParagraphText(paragraph, options = {}) {
   return text;
 }
 
+function getParagraphNodes(body) {
+  if (!body) return [];
+  const namespaced = body.getElementsByTagNameNS(NS_W, 'p');
+  if (namespaced.length > 0) return Array.from(namespaced);
+  return Array.from(body.getElementsByTagName('*')).filter(node => getLocalName(node) === 'p');
+}
+
 export function extractParagraphsFromDocumentXml(documentXml) {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(String(documentXml || ''), 'application/xml');
@@ -419,174 +411,74 @@ export function extractParagraphsFromDocumentXml(documentXml) {
   return paragraphs;
 }
 
-export async function extractDocumentParagraphs(zip) {
-  const xml = await zip.file('word/document.xml')?.async('string');
-  if (!xml) throw new Error('word/document.xml not found');
-  return extractParagraphsFromDocumentXml(xml);
+function extractParagraphsFromDoc(doc) {
+  if (!doc || typeof doc.inspect !== 'function') return [];
+  const inspection = doc.inspect({ revisionView: 'accepted' });
+  return (inspection.paragraphs || [])
+    .map(p => ({
+      index: p.index,
+      ref: p.ref || `P${p.index}`,
+      paragraphId: p.paragraphId || null,
+      fingerprint: p.fingerprint || null,
+      text: String(p.exactText ?? p.text ?? '').trim()
+    }))
+    .filter(p => p.text);
 }
+
+export async function extractDocumentParagraphs(docOrZip) {
+  if (docOrZip && typeof docOrZip.inspect === 'function') {
+    return extractParagraphsFromDoc(docOrZip);
+  }
+  if (docOrZip && typeof docOrZip.file === 'function') {
+    const xml = await docOrZip.file('word/document.xml')?.async('string');
+    if (!xml) throw new Error('word/document.xml not found');
+    return extractParagraphsFromDocumentXml(xml);
+  }
+  throw new Error('Unsupported document format for paragraph extraction');
+}
+
+export async function loadDocxFromBlob(blob) {
+  if (!blob) throw new Error('Missing document blob');
+  const deps = await loadEngineDependencies();
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return deps.openDocx(bytes);
+}
+
+// Backward-compatibility alias
+export const loadDocxZipFromBlob = loadDocxFromBlob;
 
 export async function ingestDocxFile(file) {
   const isDocx = /\.docx$/i.test(String(file?.name || ''));
   if (!isDocx) throw new Error('Only .docx files are supported');
 
-  const JSZipCtor = await getJsZipCtor();
-  const zip = await JSZipCtor.loadAsync(await file.arrayBuffer());
-  const paragraphs = await extractDocumentParagraphs(zip);
+  const deps = await loadEngineDependencies();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const doc = deps.openDocx(bytes);
+  const paragraphs = extractParagraphsFromDoc(doc);
+
   return {
-    zip,
+    doc,
+    zip: doc, // Backward-compatibility alias
     paragraphs,
     fullText: paragraphs.map(p => p.text).join('\n'),
     fileName: String(file.name || 'document.docx')
   };
 }
 
-export async function loadDocxZipFromBlob(blob) {
-  const JSZipCtor = await getJsZipCtor();
-  return JSZipCtor.loadAsync(await blob.arrayBuffer());
+export async function generateBlobFromDoc(doc) {
+  if (!doc) throw new Error('Missing document instance');
+  const u8 = typeof doc.toUint8Array === 'function'
+    ? doc.toUint8Array()
+    : (typeof doc.generateAsync === 'function' ? await doc.generateAsync({ type: 'uint8array' }) : null);
+
+  if (!u8) throw new Error('Unable to serialize document to bytes');
+  return new Blob([u8], {
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
 }
 
-function normalizeDocumentXml(xml, deps, log) {
-  const parser = new DOMParser();
-  const serializer = new XMLSerializer();
-  const xmlDoc = parser.parseFromString(xml, 'application/xml');
-
-  if (typeof deps.normalizeBodySectionOrderStandalone === 'function') {
-    deps.normalizeBodySectionOrderStandalone(xmlDoc);
-  }
-  if (typeof deps.sanitizeNestedParagraphsInTables === 'function') {
-    deps.sanitizeNestedParagraphsInTables(xmlDoc, {
-      onInfo: message => log(String(message))
-    });
-  }
-
-  return serializer.serializeToString(xmlDoc);
-}
-
-// Engine state (numbering-ID allocation, list continuity, table-redline dedup, comment context) must persist
-// across every operation in a document pass — not reset per batch — or numbered lists and
-// repeated structural edits collide. Built once from the document's initial parts.
-async function createEngineRuntimeContext(zip, deps) {
-  const existingNumberingXml = await zip.file('word/numbering.xml')?.async('string');
-  const existingCommentsXml = await zip.file('word/comments.xml')?.async('string');
-  const existingCommentsExtendedXml = await zip.file('word/commentsExtended.xml')?.async('string');
-  const numberingIdState = typeof deps.createDynamicNumberingIdState === 'function'
-    ? deps.createDynamicNumberingIdState(existingNumberingXml || '', { minId: 1, maxPreferred: 32767 })
-    : null;
-
-  return {
-    numberingIdState,
-    commentsXml: existingCommentsXml || null,
-    commentsExtendedXml: existingCommentsExtendedXml || null,
-    listFallbackSharedNumIdByKey: new Map(),
-    listFallbackSequenceState: { explicitByNumberingKey: new Map() },
-    tableStructuralRedlineKeys: new Set()
-  };
-}
-
-async function applyOperationsBatch(zip, operations, { author, log, generateRedlines = true, runtimeContext }) {
-  const deps = await loadEngineDependencies(log);
-  let documentXml = await zip.file('word/document.xml')?.async('string');
-  if (!documentXml) throw new Error('word/document.xml not found');
-
-  const capturedNumberingXml = [];
-  const capturedCommentsXml = [];
-  const capturedCommentsExtendedXml = [];
-  const results = [];
-
-  for (const op of operations) {
-    try {
-      const step = await deps.applyOperationToDocumentXml(documentXml, op, author, runtimeContext, {
-        generateRedlines: Boolean(generateRedlines),
-        sanitizeInput: true,
-        onInfo: message => log(String(message)),
-        onWarn: message => log(`[WARN] ${String(message)}`)
-      });
-
-      if (typeof step?.documentXml === 'string') {
-        documentXml = step.documentXml;
-      }
-      if (step.numberingXml) capturedNumberingXml.push(step.numberingXml);
-      if (step.commentsXml) capturedCommentsXml.push(step.commentsXml);
-      if (step.commentsExtendedXml) capturedCommentsExtendedXml.push(step.commentsExtendedXml);
-      if (Array.isArray(step.warnings)) {
-        for (const warning of step.warnings) {
-          log(`[WARN] ${String(warning)}`);
-        }
-      }
-
-      const stepError = step.error
-        ? (typeof step.error === 'object'
-          ? (step.error.message || step.error.code || JSON.stringify(step.error))
-          : String(step.error))
-        : (step.status === 'error' ? 'Operation returned error status' : null);
-
-      results.push({
-        ...op,
-        success: Boolean(step.hasChanges) && !stepError,
-        receipt: step.receipt || null,
-        error: stepError
-      });
-    } catch (error) {
-      results.push({ ...op, success: false, error: error?.message || String(error) });
-    }
-  }
-
-  zip.file('word/document.xml', documentXml);
-
-  if (typeof deps.ensureNumberingArtifactsInZip === 'function' && capturedNumberingXml.length > 0) {
-    await deps.ensureNumberingArtifactsInZip(zip, capturedNumberingXml, {
-      mergeNumberingXml: (existingXml, incomingXml) => {
-        if (typeof deps.mergeNumberingXmlBySchemaOrder === 'function') {
-          return deps.mergeNumberingXmlBySchemaOrder(existingXml, incomingXml);
-        }
-        return existingXml || incomingXml;
-      },
-      onInfo: message => log(String(message))
-    });
-  }
-
-  if (typeof deps.ensureCommentsArtifactsInZip === 'function' && capturedCommentsXml.length > 0) {
-    for (const commentsXml of capturedCommentsXml) {
-      await deps.ensureCommentsArtifactsInZip(zip, commentsXml, {
-        onInfo: message => log(String(message))
-      });
-    }
-  }
-
-  if (typeof deps.ensureCommentsExtendedArtifactsInZip === 'function' && capturedCommentsExtendedXml.length > 0) {
-    for (const commentsExtendedXml of capturedCommentsExtendedXml) {
-      await deps.ensureCommentsExtendedArtifactsInZip(zip, commentsExtendedXml, {
-        onInfo: message => log(String(message))
-      });
-    }
-  }
-
-  return results;
-}
-
-// Run the expensive normalize + validate pass once, after every batch is applied,
-// instead of repeating it for each batch. Returns the validation outcome so callers
-// can decide whether the package is safe to export rather than silently shipping it.
-async function finalizeDocumentPackage(zip, { log = () => { } } = {}) {
-  const deps = await loadEngineDependencies(log);
-  const documentXml = await zip.file('word/document.xml')?.async('string');
-  if (!documentXml) return { ok: false, error: 'word/document.xml not found' };
-
-  zip.file('word/document.xml', normalizeDocumentXml(documentXml, deps, log));
-
-  if (typeof deps.validateDocxPackage !== 'function') {
-    return { ok: true, error: null };
-  }
-
-  try {
-    await deps.validateDocxPackage(zip);
-    return { ok: true, error: null };
-  } catch (error) {
-    const message = error?.message || String(error);
-    log(`[WARN] Package validation failed: ${message}`);
-    return { ok: false, error: message };
-  }
-}
+// Backward-compatibility alias
+export const generateBlobFromZip = generateBlobFromDoc;
 
 // Describe why a single operation did not land, distinguishing engine errors from the
 // common "no change" case where the model's target text was not found in the document.
@@ -613,29 +505,61 @@ export function summarizeOperationFailures(results) {
 }
 
 export async function applyOperationsInBatches({
+  doc,
   zip,
   operations,
   author,
   batchSize = 3,
   generateRedlines = true,
+  existingRevisions = 'slice-cross-author',
   onProgress = () => { },
   onLog = () => { }
 }) {
+  const targetDoc = doc || zip;
+  if (!targetDoc) throw new Error('Missing document instance');
+
   const batches = chunkOperations(operations, batchSize);
   const allResults = [];
-
-  const deps = await loadEngineDependencies(onLog);
-  const runtimeContext = await createEngineRuntimeContext(zip, deps);
+  let lastResult = null;
 
   for (let i = 0; i < batches.length; i += 1) {
     const batch = batches[i];
-    const batchResults = await applyOperationsBatch(zip, batch, {
-      author,
-      log: onLog,
-      generateRedlines,
-      runtimeContext
-    });
-    allResults.push(...batchResults);
+    try {
+      lastResult = await targetDoc.applyOperations(batch, {
+        author,
+        generateRedlines: Boolean(generateRedlines),
+        existingRevisions,
+        validate: true
+      });
+
+      const batchResults = (lastResult.results || []).map((r, idx) => {
+        const op = batch[idx] || {};
+        const stepError = r.error
+          ? (typeof r.error === 'object'
+            ? (r.error.message || r.error.code || JSON.stringify(r.error))
+            : String(r.error))
+          : (r.status === 'error' || r.status === 'refused' ? 'Operation returned error status' : null);
+
+        const isApplied = r.status === 'applied'
+          || r.receipt?.committed === true
+          || r.receipt?.finalDisposition === 'applied';
+
+        return {
+          ...op,
+          ...r,
+          success: Boolean(r.success ?? (isApplied && !stepError)),
+          receipt: r.receipt || null,
+          error: stepError
+        };
+      });
+      allResults.push(...batchResults);
+    } catch (batchError) {
+      onLog(`[ERROR] Batch ${i + 1} application failed: ${batchError?.message || String(batchError)}`);
+      for (const op of batch) {
+        allResults.push({ ...op, success: false, error: batchError?.message || String(batchError) });
+      }
+    }
+
     onProgress({
       batchIndex: i + 1,
       totalBatches: batches.length,
@@ -645,67 +569,59 @@ export async function applyOperationsInBatches({
     await new Promise(resolve => setTimeout(resolve, 0));
   }
 
-  const validation = batches.length > 0
-    ? await finalizeDocumentPackage(zip, { log: onLog })
-    : { ok: true, error: null };
+  const generatedIssues = lastResult?.validation?.generatedIssues || lastResult?.issues || [];
+  const validationOk = !lastResult?.error && generatedIssues.length === 0;
+  const validationError = !validationOk
+    ? (lastResult?.error?.message || (generatedIssues[0]?.message || 'Package validation error'))
+    : null;
 
   return {
     results: allResults,
-    validation,
+    validation: {
+      ok: validationOk,
+      error: validationError,
+      issues: generatedIssues
+    },
     failures: summarizeOperationFailures(allResults)
   };
 }
 
-export async function acceptAllTrackedChangesInZip({
+export async function acceptAllTrackedChangesInDoc({
+  doc,
   zip,
   allAuthors = true,
   author = '',
   onLog = () => { }
 }) {
-  if (!zip) throw new Error('Missing document package');
+  const targetDoc = doc || zip;
+  if (!targetDoc) throw new Error('Missing document instance');
 
-  const deps = await loadEngineDependencies(onLog);
-  if (typeof deps.acceptTrackedChangesInOoxml !== 'function') {
-    throw new Error('Tracked-change acceptance helper unavailable');
+  if (typeof targetDoc.resolveRevisions !== 'function') {
+    throw new Error('Document does not support resolveRevisions');
   }
 
-  const documentXml = await zip.file('word/document.xml')?.async('string');
-  if (!documentXml) throw new Error('word/document.xml not found');
+  const result = await targetDoc.resolveRevisions('accept', {
+    allAuthors,
+    author: String(author || '').trim(),
+    validate: true
+  });
 
-  const options = allAuthors
-    ? { allAuthors: true }
-    : { author: String(author || '').trim() };
-  const result = deps.acceptTrackedChangesInOoxml(documentXml, options);
-  const warnings = Array.isArray(result?.warnings) ? result.warnings.map(item => String(item)) : [];
+  const warnings = Array.isArray(result?.warnings) ? result.warnings.map(String) : [];
   if (result?.error) {
     const errorMsg = result.error.message || String(result.error);
     warnings.push(errorMsg);
     onLog(`[ERROR] ${errorMsg}`);
   }
 
-  for (const warning of warnings) {
-    onLog(`[WARN] ${warning}`);
-  }
-
-  if (result?.hasChanges) {
-    const normalizedXml = normalizeDocumentXml(String(result.oxml || ''), deps, onLog);
-    zip.file('word/document.xml', normalizedXml);
-
-    if (typeof deps.validateDocxPackage === 'function') {
-      try {
-        await deps.validateDocxPackage(zip);
-      } catch (error) {
-        onLog(`[WARN] Package validation warning: ${error?.message || String(error)}`);
-      }
-    }
-  }
-
   return {
     hasChanges: Boolean(result?.hasChanges),
-    acceptedCount: Number(result?.acceptedCount || 0),
+    acceptedCount: Number(result?.acceptedCount || (result?.results?.length ?? 0)),
     warnings
   };
 }
+
+// Backward-compatibility alias
+export const acceptAllTrackedChangesInZip = acceptAllTrackedChangesInDoc;
 
 const PREVIEW_RENDER_OPTIONS = {
   inWrapper: true,
@@ -754,9 +670,9 @@ export async function renderPreviewFromBlob(blob, previewHost, statusCallback = 
   await renderPreviewBuffer(await blob.arrayBuffer(), previewHost, statusCallback);
 }
 
-export async function renderPreviewFromZip(zip, previewHost, statusCallback = () => { }) {
-  if (!previewHost || !zip) return;
-  const blob = await zip.generateAsync({ type: 'blob' });
+export async function renderPreviewFromZip(docOrZip, previewHost, statusCallback = () => { }) {
+  if (!previewHost || !docOrZip) return;
+  const blob = await generateBlobFromDoc(docOrZip);
   await renderPreviewBuffer(await blob.arrayBuffer(), previewHost, statusCallback);
 }
 
@@ -769,8 +685,18 @@ export function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function generateBlobFromZip(zip) {
-  return zip.generateAsync({ type: 'blob' });
+export async function downloadZipAsDocx(docOrZip, outputFileName) {
+  const blob = await generateBlobFromDoc(docOrZip);
+  downloadBlob(blob, outputFileName);
+}
+
+async function getJsZipCtor() {
+  if (globalThis.JSZip) return globalThis.JSZip;
+  const module = await import('https://esm.sh/jszip@3.10.1');
+  const ctor = module?.default || module?.JSZip || module;
+  if (!ctor) throw new Error('Unable to load JSZip');
+  globalThis.JSZip = ctor;
+  return ctor;
 }
 
 export async function createArchiveBlob(files) {
@@ -783,9 +709,4 @@ export async function createArchiveBlob(files) {
   }
 
   return archive.generateAsync({ type: 'blob' });
-}
-
-export async function downloadZipAsDocx(zip, outputFileName) {
-  const blob = await generateBlobFromZip(zip);
-  downloadBlob(blob, outputFileName);
 }

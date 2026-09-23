@@ -81,8 +81,8 @@ run('chunkOperations splits operation list into fixed-size batches', () => {
   assert.deepEqual(chunks[0], [1, 2]);
 });
 
-run('DOCX_REDLINE_VERSION is updated to 0.5.0', () => {
-  assert.equal(DOCX_REDLINE_VERSION, '0.5.0');
+run('DOCX_REDLINE_VERSION is updated to 0.8.0', () => {
+  assert.equal(DOCX_REDLINE_VERSION, '0.8.0');
 });
 
 run('describeOperationFailure distinguishes engine errors from missing targets', () => {

@@ -333,7 +333,7 @@ function buildSystemPrompt({
 
   const basePrompt = [
     `You are an expert ${targetDocumentLabel} editor.`,
-    `Goal: tailor a base ${targetDocumentLabel} to one target job description while preserving truthfulness and professional tone.`,
+    `Goal: tailor a base ${targetDocumentLabel} to one target job description while preserving truthfulness and professional tone.  Make sure you use facts from the resume, cover letter and reference materials, don't make things up.`,
     modeInstruction,
     `Limit redline operations to at most ${redlineCap}.`,
     `Draw from all provided context (resume, base ${targetDocumentLabel}, and sample letters) to find specific professional stories or experiences that directly address the job requirements.`,
