@@ -758,6 +758,20 @@ button:disabled {
   background: linear-gradient(180deg, #ffffff 0%, #f6faf8 100%);
   box-shadow: 0 24px 42px rgba(13, 35, 29, 0.24);
   padding: 14px;
+  max-height: calc(100dvh - 94px);
+  overflow-y: auto;
+}
+
+.settings-prompt-guidance summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.settings-prompt-guidance summary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 4px;
 }
 
 .settings-head {

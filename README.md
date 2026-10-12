@@ -7,6 +7,7 @@ Application Station helps you turn one strong base cover letter into many job-sp
 - Tailor a single base `.docx` cover letter for each job posting you add.
 - Optionally tailor your resume for each job too.
 - Use sample cover letters to steer voice/style.
+- Add optional tailoring preferences under Settings → Additional instructions; they save locally and apply to future cover letters and resumes.
 - Work job-by-job while keeping everything organized in one session.
 - Preview results directly in the browser before exporting.
 - Export one result at a time or all results as a ZIP.

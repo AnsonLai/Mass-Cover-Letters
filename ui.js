@@ -40,6 +40,7 @@ export function getUiRefs() {
     saveApiKeyBtn: getById('saveApiKeyBtn'),
     apiKeyValidationChip: getById('apiKeyValidationChip'),
     modelSelect: getById('modelSelect'),
+    promptGuidanceInput: getById('promptGuidanceInput'),
     directModeBtn: getById('directModeBtn'),
     trackModeBtn: getById('trackModeBtn'),
     includeCommentsToggle: getById('includeCommentsToggle'),

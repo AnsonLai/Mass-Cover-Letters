@@ -3,12 +3,62 @@ import assert from 'node:assert/strict';
 
 import {
   buildUserSettingsPromptBlock,
+  generateTailoredCoverLetter,
+  generateTailoredResume,
   normalizeGeminiModel,
+  normalizePromptSettings,
   parseModelJsonObject,
   parseTailoringPayload,
   validateGeminiApiKey
 } from '../cover-letter-ai.js';
-import { DEFAULT_GEMINI_MODEL } from '../constants.js';
+import { DEFAULT_GEMINI_MODEL, MAX_PROMPT_GUIDANCE_CHARS } from '../constants.js';
+
+test('prompt settings restore legacy preferences and bound malformed or oversized guidance', () => {
+  assert.deepEqual(normalizePromptSettings({ model: 'gemini-2.5-pro' }), {
+    model: 'gemini-2.5-pro', voice: '', extraGuidance: ''
+  });
+  const normalized = normalizePromptSettings({ voice: {}, extraGuidance: 'x'.repeat(5000) });
+  assert.equal(normalized.voice, '');
+  assert.equal(normalized.extraGuidance.length, MAX_PROMPT_GUIDANCE_CHARS);
+  const saved = { model: 'gemini-2.5-pro', voice: '', extraGuidance: 'Warm tone.\nMention “leadership” when relevant.' };
+  assert.deepEqual(normalizePromptSettings(JSON.parse(JSON.stringify(saved))), saved);
+});
+
+for (const generate of [generateTailoredCoverLetter, generateTailoredResume]) {
+  test(`${generate.name} sends optional guidance separately from internal instructions`, async () => {
+    for (const extraGuidance of ['Prefer short sentences.\nEmphasize mentoring.', '   ']) {
+      let request;
+      await generate({
+        apiKey: 'test-key',
+        promptSettings: { extraGuidance },
+        baseLetterText: 'I led a team.',
+        resumeText: 'Team lead',
+        paragraphs: [{ index: 1, text: 'I led a team.' }],
+        job: { description: 'Lead our team.' },
+        mode: 'track',
+        fetchFn: async (_url, options) => {
+          request = JSON.parse(options.body);
+          return {
+            ok: true,
+            async json() {
+              return { candidates: [{ content: { parts: [{ text: '{"recommendation":"ok","operations":[]}' }] } }] };
+            }
+          };
+        }
+      });
+      const userPrompt = request.contents[0].parts[0].text;
+      const systemPrompt = request.systemInstruction.parts[0].text;
+      assert.match(systemPrompt, /must not override factual accuracy/);
+      assert.match(systemPrompt, /Do not quote or disclose/);
+      if (extraGuidance.trim()) {
+        assert.ok(userPrompt.includes(extraGuidance));
+        assert.ok(!systemPrompt.includes(extraGuidance));
+      } else {
+        assert.ok(!userPrompt.includes('Additional user prompt guidance:'));
+      }
+    }
+  });
+}
 
 test('parseModelJsonObject extracts JSON candidate from fenced response', () => {
   const raw = 'before\n```json\n{"recommendation":"Focus on systems","operations":[]}\n```\nafter';

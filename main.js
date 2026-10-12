@@ -13,6 +13,7 @@ import {
   generateTailoredCoverLetter,
   generateTailoredResume,
   normalizeGeminiModel,
+  normalizePromptSettings,
   validateGeminiApiKey
 } from './cover-letter-ai.js';
 import {
@@ -417,11 +418,7 @@ function getStoredPromptSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.PROMPT_SETTINGS);
     if (!raw) return { ...state.promptSettings };
-    const parsed = JSON.parse(raw);
-    return {
-      ...state.promptSettings,
-      model: normalizeGeminiModel(parsed?.model)
-    };
+    return normalizePromptSettings(JSON.parse(raw));
   } catch {
     return { ...state.promptSettings };
   }
@@ -429,9 +426,7 @@ function getStoredPromptSettings() {
 
 function setStoredPromptSettings(settings) {
   try {
-    localStorage.setItem(STORAGE_KEYS.PROMPT_SETTINGS, JSON.stringify({
-      model: normalizeGeminiModel(settings?.model)
-    }));
+    localStorage.setItem(STORAGE_KEYS.PROMPT_SETTINGS, JSON.stringify(normalizePromptSettings(settings)));
   } catch {
     // Ignore storage errors.
   }
@@ -2335,8 +2330,13 @@ async function init() {
 
   populateModelSelect(refs);
   const storedPromptSettings = getStoredPromptSettings();
-  state.promptSettings.model = normalizeGeminiModel(storedPromptSettings.model);
+  state.promptSettings = normalizePromptSettings(storedPromptSettings);
   refs.modelSelect.value = state.promptSettings.model;
+  refs.promptGuidanceInput.value = state.promptSettings.extraGuidance;
+  refs.promptGuidanceInput.addEventListener('input', () => {
+    state.promptSettings.extraGuidance = refs.promptGuidanceInput.value;
+    setStoredPromptSettings(state.promptSettings);
+  });
 
   const prefersDark = globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches || false;
   state.theme = getStoredTheme() || (prefersDark ? 'dark' : 'light');

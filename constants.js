@@ -40,3 +40,4 @@ export const REDLINE_CAP = 12;
 export const MAX_BASE_LETTER_CHARS = 24000;
 export const MAX_CONTEXT_CHARS = 54000;
 export const MAX_JOB_DESCRIPTION_CHARS = 24000;
+export const MAX_PROMPT_GUIDANCE_CHARS = 4000;
