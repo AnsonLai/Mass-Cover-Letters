@@ -4,7 +4,7 @@ const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DEFAULT_HIGHLIGHT = 'yellow';
 
 let cachedDepsPromise = null;
-export const DOCX_REDLINE_VERSION = '0.8.0';
+export const DOCX_REDLINE_VERSION = '0.9.0';
 
 function getLocalName(node) {
   return String(node?.localName || node?.nodeName || '').replace(/^.*:/, '');
@@ -290,24 +290,16 @@ export async function loadEngineDependencies(log = () => { }) {
 
   cachedDepsPromise = (async () => {
     const isNode = typeof process !== 'undefined' && process?.versions?.node;
-    const candidates = [];
+    const candidates = [`./vendor/docx-redline/${DOCX_REDLINE_VERSION}/docx-redline.bundle.mjs`];
 
-    // Local / Node file paths
-    if (isNode) {
+    // Browsers can fall back to the same pinned release. Node must use the
+    // checked-in bundle so tests cannot silently load a different checkout.
+    if (!isNode) {
       candidates.push(
-        './scratch/docx-redline.bundle.js',
-        '../Docx Redline JS/dist/docx-redline.bundle.js',
-        '../Docx Redline JS/index.js',
-        '@ansonlai/docx-redline-js/bundle',
-        '@ansonlai/docx-redline-js'
+        `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/dist/docx-redline.bundle.js`,
+        `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/dist/docx-redline.bundle.js`
       );
     }
-
-    // Canonical CDN URLs (Zero-dependency standalone v0.8.0 bundle)
-    candidates.push(
-      `https://cdn.jsdelivr.net/npm/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/dist/docx-redline.bundle.js`,
-      `https://esm.sh/@ansonlai/docx-redline-js@${DOCX_REDLINE_VERSION}/dist/docx-redline.bundle.js`
-    );
 
     const module = await tryImportFirst(candidates);
 
@@ -504,6 +496,32 @@ export function summarizeOperationFailures(results) {
     .map(describeOperationFailure);
 }
 
+export function isTargetingFailure(result) {
+  const code = result?.error?.code;
+  if (code) return new Set([
+    'TARGET_NOT_FOUND', 'SOURCE_TARGET_NOT_FOUND', 'TARGET_TEXT_MISMATCH',
+    'TARGET_INDEX_MISMATCH', 'ANCHOR_NOT_FOUND'
+  ]).has(code);
+  // Compatibility with legacy string errors; never retry arbitrary refusals.
+  return /^(?:Original text was not found in the supplied OOXML\.|target text was not found in the document)$/i.test(String(result?.error || ''));
+}
+
+export function summarizeOperationWarnings(results) {
+  const warnings = [];
+  for (const result of Array.isArray(results) ? results : []) {
+    if (result?.error) continue;
+    const ref = result?.targetRef ? `P${result.targetRef}` : 'unknown paragraph';
+    const messages = [];
+    const entries = [result?.warnings, result?.diagnostics].flatMap(value => Array.isArray(value) ? value : []);
+    for (const item of entries) {
+      const message = typeof item === 'string' ? item : [item?.code, item?.message].filter(Boolean).join(': ');
+      if (message && !messages.includes(message)) messages.push(message);
+    }
+    for (const message of messages) warnings.push(`${result.type || 'operation'} on ${ref}: ${message}`);
+  }
+  return [...new Set(warnings)];
+}
+
 export async function applyOperationsInBatches({
   doc,
   zip,
@@ -520,25 +538,30 @@ export async function applyOperationsInBatches({
 
   const batches = chunkOperations(operations, batchSize);
   const allResults = [];
-  let lastResult = null;
+  const generatedIssues = [];
+  const batchErrors = [];
 
   for (let i = 0; i < batches.length; i += 1) {
     const batch = batches[i];
     try {
-      lastResult = await targetDoc.applyOperations(batch, {
+      const batchResult = await targetDoc.applyOperations(batch, {
         author,
         generateRedlines: Boolean(generateRedlines),
         existingRevisions,
-        validate: true
+        validate: true,
+        verifyRevisionFidelity: 'enforce'
       });
+      generatedIssues.push(...(batchResult.validation?.generatedIssues || batchResult.issues || []));
+      if (batchResult.error && !(batchResult.results || []).length) {
+        batchErrors.push(batchResult.error.message || batchResult.error.code || String(batchResult.error));
+      }
 
-      const batchResults = (lastResult.results || []).map((r, idx) => {
-        const op = batch[idx] || {};
-        const stepError = r.error
-          ? (typeof r.error === 'object'
-            ? (r.error.message || r.error.code || JSON.stringify(r.error))
-            : String(r.error))
-          : (r.status === 'error' || r.status === 'refused' ? 'Operation returned error status' : null);
+      const batchResults = batch.map((op, idx) => {
+        const r = batchResult.results?.[idx] || { status: 'error', error: batchResult.error || { code: 'MISSING_OPERATION_RESULT', message: 'Engine did not return a result for this operation.' } };
+        const rolledBack = batchResult.rolledBack === true || r.receipt?.finalDisposition === 'rolled_back';
+        const stepError = r.error || (rolledBack
+          ? { code: 'BATCH_ROLLED_BACK', message: batchResult.error?.message || 'Operation was rolled back because its batch failed.' }
+          : (r.status === 'error' || r.status === 'refused' ? { code: 'OPERATION_REFUSED', message: 'Operation returned error status' } : null));
 
         const isApplied = r.status === 'applied'
           || r.receipt?.committed === true
@@ -547,13 +570,14 @@ export async function applyOperationsInBatches({
         return {
           ...op,
           ...r,
-          success: Boolean(r.success ?? (isApplied && !stepError)),
+          success: !stepError && r.receipt?.committed !== false && Boolean(r.success ?? isApplied),
           receipt: r.receipt || null,
           error: stepError
         };
       });
       allResults.push(...batchResults);
     } catch (batchError) {
+      batchErrors.push(batchError?.message || String(batchError));
       onLog(`[ERROR] Batch ${i + 1} application failed: ${batchError?.message || String(batchError)}`);
       for (const op of batch) {
         allResults.push({ ...op, success: false, error: batchError?.message || String(batchError) });
@@ -569,10 +593,9 @@ export async function applyOperationsInBatches({
     await new Promise(resolve => setTimeout(resolve, 0));
   }
 
-  const generatedIssues = lastResult?.validation?.generatedIssues || lastResult?.issues || [];
-  const validationOk = !lastResult?.error && generatedIssues.length === 0;
+  const validationOk = batchErrors.length === 0 && generatedIssues.length === 0;
   const validationError = !validationOk
-    ? (lastResult?.error?.message || (generatedIssues[0]?.message || 'Package validation error'))
+    ? (batchErrors[0] || generatedIssues[0]?.message || 'Package validation error')
     : null;
 
   return {
@@ -582,7 +605,8 @@ export async function applyOperationsInBatches({
       error: validationError,
       issues: generatedIssues
     },
-    failures: summarizeOperationFailures(allResults)
+    failures: summarizeOperationFailures(allResults),
+    warnings: summarizeOperationWarnings(allResults)
   };
 }
 

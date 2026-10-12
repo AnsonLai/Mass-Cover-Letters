@@ -47,6 +47,17 @@ Then open `http://localhost:8002`.
 ## Notes
 
 - Your session persists in the browser (files/results in IndexedDB, lightweight preferences in localStorage).
+- The DOCX engine uses the checked-in 0.9.0 bundle under `vendor/docx-redline/0.9.0`; include it when serving or deploying the app. Browser and Node checks use the same release.
+- Edits that cannot preserve revision fidelity are refused. Skipped edits and list-conversion warnings appear in the job details for review.
+
+## Tests
+
+```bash
+node --test tests/*.test.mjs
+node tests/run-tests.mjs
+```
+
+DOCX fixture tests currently require `jszip` locally or in the sibling `Docx Redline JS` checkout. That checkout is used only to construct fixtures, not to load the engine.
 
 ## License
 

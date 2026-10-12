@@ -317,6 +317,7 @@ export function renderSelectedJob(refs, job, options = {}) {
 
   const recommendation = String(job.recommendation || '').trim();
   const failures = Array.isArray(job.failedOperations) ? job.failedOperations.filter(Boolean) : [];
+  const applyWarnings = Array.isArray(job.applyWarnings) ? job.applyWarnings.filter(Boolean) : [];
   const validationError = String(job.validationError || '').trim();
 
   const lines = [];
@@ -326,6 +327,9 @@ export function renderSelectedJob(refs, job, options = {}) {
   }
   if (validationError) {
     lines.push(`⚠ Validation warning: ${validationError}`);
+  }
+  if (applyWarnings.length > 0) {
+    lines.push(`⚠ Edit warnings:\n- ${applyWarnings.join('\n- ')}`);
   }
 
   // Preserve the line breaks used above regardless of stylesheet defaults.

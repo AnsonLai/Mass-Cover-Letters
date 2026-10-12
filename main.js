@@ -27,6 +27,9 @@ import {
   loadDocxZipFromBlob,
   normalizeAndFilterOperations,
   reconcileOperationsWithParagraphs,
+  isTargetingFailure,
+  summarizeOperationFailures,
+  summarizeOperationWarnings,
   renderPreviewFromBlob
 } from './docx-engine.js';
 import {
@@ -216,6 +219,7 @@ export function createCoverLetterJob({ company, role, description }) {
     operationCount: 0,
     failedOperationCount: 0,
     failedOperations: [],
+    applyWarnings: [],
     validationError: '',
     runtime: {
       error: null
@@ -369,6 +373,7 @@ export function normalizePersistedJob(rawJob) {
     operationCount: Number(source.operationCount || 0),
     failedOperationCount: Number(source.failedOperationCount || 0),
     failedOperations: Array.isArray(source.failedOperations) ? source.failedOperations.map(String) : [],
+    applyWarnings: Array.isArray(source.applyWarnings) ? source.applyWarnings.map(String) : [],
     validationError: String(source.validationError || ''),
     runtime: {
       error: null
@@ -1141,6 +1146,7 @@ async function persistSessionState() {
       operationCount: Number(job.operationCount || 0),
       failedOperationCount: Number(job.failedOperationCount || 0),
       failedOperations: Array.isArray(job.failedOperations) ? job.failedOperations.map(String) : [],
+      applyWarnings: Array.isArray(job.applyWarnings) ? job.applyWarnings.map(String) : [],
       validationError: String(job.validationError || ''),
       storage: {
         resultKey: String(job?.storage?.resultKey || ''),
@@ -1772,20 +1778,30 @@ async function repairFailedOperationsOnce({
   job,
   generateRedlines
 }) {
-  const failedResults = (Array.isArray(applyResult?.results) ? applyResult.results : [])
+  const allResults = Array.isArray(applyResult?.results) ? applyResult.results : [];
+  const failedResults = allResults
     .filter(result => result && !result.success);
-  if (!zip || failedResults.length === 0) return applyResult;
+  const targetingFailures = failedResults.filter(isTargetingFailure);
+  if (!zip || targetingFailures.length === 0) return applyResult;
 
   const currentParagraphs = await extractDocumentParagraphs(zip);
-  const reconciled = reconcileOperationsWithParagraphs(failedResults, currentParagraphs, {
+  const reconciled = reconcileOperationsWithParagraphs(targetingFailures, currentParagraphs, {
     onInfo: message => console.info(`[Application Station] ${message}`)
   });
-  const retryOperations = reconciled.filter((op, index) => {
-    const original = failedResults[index];
+  const retryResults = reconciled.filter((op, index) => {
+    const original = targetingFailures[index];
     return op
       && original
       && (op.target !== original.target || op.targetRef !== original.targetRef);
   });
+  const operationFields = new Set([
+    'type', 'target', 'targetRef', 'targetEnd', 'targetEndRef', 'modified',
+    'replacements', 'textToComment', 'commentContent', 'textToHighlight',
+    'color', 'listMarkers'
+  ]);
+  const retryOperations = retryResults.map(result => Object.fromEntries(
+    Object.entries(result).filter(([key]) => operationFields.has(key))
+  ));
 
   if (retryOperations.length === 0) return applyResult;
 
@@ -1806,41 +1822,40 @@ async function repairFailedOperationsOnce({
     }
   });
 
-  const retriedKeys = new Set(retryOperations.map(op => `${op.type}|${op.targetRef}|${op.target}`));
-  const carriedResults = (Array.isArray(applyResult?.results) ? applyResult.results : [])
-    .filter(result => {
-      if (result.success) return true;
-      const originalIndex = failedResults.indexOf(result);
-      const retryOp = reconciled[originalIndex];
-      if (!retryOp) return true;
-      const retryKey = `${retryOp.type}|${retryOp.targetRef}|${retryOp.target}`;
-      return !retriedKeys.has(retryKey);
-    });
+  const retryResultKeys = new Set(retryOperations.map(op => `${op.type}|${op.targetRef}|${op.target}`));
+  const retriedOriginals = new Set();
+  targetingFailures.forEach((result, index) => {
+    const retryOp = reconciled[index];
+    if (!retryOp) return;
+    const key = `${retryOp.type}|${retryOp.targetRef}|${retryOp.target}`;
+    if (retryResultKeys.has(key)) retriedOriginals.add(result);
+  });
+  const carriedResults = allResults.filter(result => !retriedOriginals.has(result));
   const mergedResults = [
     ...carriedResults,
-    ...retryApply.results
+    ...(Array.isArray(retryApply.results) ? retryApply.results : [])
   ];
+
+  const mergeValidation = (first, second) => {
+    const validations = [first, second].filter(value => value && typeof value === 'object');
+    const issues = validations.flatMap(value => Array.isArray(value.issues) ? value.issues : []);
+    const errors = validations.map(value => value.error).filter(Boolean);
+    const error = [...new Set(errors.map(value => String(value)))].join(' | ') || null;
+    return {
+      ...(validations[validations.length - 1] || {}),
+      ok: validations.every(value => value.ok !== false),
+      error,
+      issues: issues.filter((issue, index) => issues.findIndex(other => JSON.stringify(other) === JSON.stringify(issue)) === index)
+    };
+  };
+  const validation = mergeValidation(applyResult.validation, retryApply.validation);
 
   return {
     results: mergedResults,
-    validation: retryApply.validation || applyResult.validation,
-    failures: summarizeApplyFailures(mergedResults)
+    validation,
+    failures: summarizeOperationFailures(mergedResults),
+    warnings: summarizeOperationWarnings(mergedResults)
   };
-}
-
-function summarizeApplyFailures(results) {
-  return (Array.isArray(results) ? results : [])
-    .filter(result => result && !result.success)
-    .map(result => {
-      const ref = Number.isInteger(result?.targetRef) && result.targetRef > 0
-        ? `P${result.targetRef}`
-        : 'unknown paragraph';
-      const type = String(result?.type || 'operation').trim() || 'operation';
-      const reason = result?.error
-        ? String(result.error)
-        : 'target text was not found in the document';
-      return `${type} on ${ref}: ${reason}`;
-    });
 }
 
 // Returns a user-facing error string when a run cannot start, or null when the
@@ -1909,6 +1924,7 @@ async function runJob(job, refs, progressContext = {}) {
   try {
     job.status = 'preparing';
     job.failedOperations = [];
+    job.applyWarnings = [];
     job.validationError = '';
     // Re-running a job clears any accept-backup state (B5).
     job.hasAcceptBackup = { coverLetter: false, resume: false };
@@ -2061,6 +2077,10 @@ async function runJob(job, refs, progressContext = {}) {
       ...labelFailures(resumeApply.failures, 'Resume')
     ];
     job.failedOperationCount = job.failedOperations.length;
+    job.applyWarnings = [
+      ...labelFailures(summarizeOperationWarnings(coverLetterApply.results), 'Cover letter'),
+      ...labelFailures(summarizeOperationWarnings(resumeApply.results), 'Resume')
+    ];
 
     // A package that fails OOXML validation may be corrupt — never report it as clean.
     const validationErrors = [
@@ -2086,15 +2106,19 @@ async function runJob(job, refs, progressContext = {}) {
         validation: resumeApply.validation
       },
       failedOperations: job.failedOperations,
+      applyWarnings: job.applyWarnings,
       validationError: job.validationError,
       mode: state.editMode
     });
 
-    const statusLevel = job.status === 'partial' ? 'warn' : 'success';
+    const statusLevel = job.status === 'partial' || job.applyWarnings.length > 0 ? 'warn' : 'success';
     const partialNote = validationErrors.length > 0
       ? ` ${job.failedOperationCount} edit(s) not applied; output may be invalid.`
       : (job.failedOperationCount > 0 ? ` ${job.failedOperationCount} edit(s) could not be applied.` : '');
-    const outcomeMessage = `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).${partialNote}`;
+    const warningNote = job.applyWarnings.length > 0
+      ? ` ${job.applyWarnings.length} apply warning(s); review job details.`
+      : '';
+    const outcomeMessage = `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).${partialNote}${warningNote}`;
     if (state.isRunning) showToast(refs, outcomeMessage, statusLevel, statusLevel === 'warn' ? 3600 : 2600);
     else setStatusBanner(refs, outcomeMessage, statusLevel);
     if (job.status === 'partial') {

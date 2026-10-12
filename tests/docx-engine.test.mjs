@@ -6,7 +6,10 @@ import {
   extractCanonicalParagraphText,
   normalizeAndFilterOperations,
   chunkOperations,
-  describeOperationFailure
+  describeOperationFailure,
+  applyOperationsInBatches,
+  summarizeOperationWarnings,
+  isTargetingFailure
 } from '../docx-engine.js';
 
 function makeMockElement(tag, children = [], text = '') {
@@ -24,8 +27,33 @@ function makeMockElement(tag, children = [], text = '') {
   return node;
 }
 
-test('DOCX_REDLINE_VERSION is updated to 0.8.0', () => {
-  assert.equal(DOCX_REDLINE_VERSION, '0.8.0');
+test('DOCX_REDLINE_VERSION is updated to 0.9.0', () => {
+  assert.equal(DOCX_REDLINE_VERSION, '0.9.0');
+});
+
+test('rolled-back operations never report success or trigger targeting repair', async () => {
+  const result = await applyOperationsInBatches({
+    doc: { async applyOperations() {
+      return {
+        rolledBack: true,
+        error: { code: 'BATCH_OPERATION_FAILED', message: 'Batch rolled back.' },
+        results: [{ status: 'applied', success: true, receipt: { committed: false, finalDisposition: 'rolled_back' } }]
+      };
+    } },
+    operations: [{ type: 'redline', targetRef: 1, target: 'Before', modified: 'After' }]
+  });
+  assert.equal(result.results[0].success, false);
+  assert.equal(result.results[0].error.code, 'BATCH_ROLLED_BACK');
+  assert.equal(isTargetingFailure(result.results[0]), false);
+  assert.match(result.failures[0], /Batch rolled back/);
+});
+
+test('refusal warnings do not duplicate the failed-edit report', () => {
+  assert.deepEqual(summarizeOperationWarnings([{
+    type: 'redline', targetRef: 1, success: false,
+    error: { code: 'REVISION_FIDELITY_VIOLATION', message: 'Refused.' },
+    warnings: ['Refused.']
+  }]), []);
 });
 
 test('normalizeAndFilterOperations strips paragraph marker prefixes and invalid rows', () => {

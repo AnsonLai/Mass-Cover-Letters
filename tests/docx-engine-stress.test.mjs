@@ -12,6 +12,8 @@ import {
   chunkOperations,
   describeOperationFailure,
   summarizeOperationFailures,
+  summarizeOperationWarnings,
+  isTargetingFailure,
   findOriginalSubstring,
   diceSimilarity,
   normalizeForMatch,
@@ -22,10 +24,11 @@ import {
   acceptAllTrackedChangesInDoc,
   loadEngineDependencies
 } from '../docx-engine.js';
+import * as pinnedDocxRedline from '../vendor/docx-redline/0.9.0/docx-redline.bundle.mjs';
 
 const require = createRequire(import.meta.url);
 
-async function createTestDocxBytes(paragraphs = ['First paragraph.', 'Second paragraph for testing.']) {
+async function createTestDocxBytes(paragraphs = ['First paragraph.', 'Second paragraph for testing.'], options = {}) {
   let JSZipCtor = null;
   const candidatePaths = [
     '../../Docx Redline JS/node_modules/jszip',
@@ -64,12 +67,12 @@ async function createTestDocxBytes(paragraphs = ['First paragraph.', 'Second par
     `</w:p>`
   ).join('');
 
-  const documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  const documentXml = options.documentXml || '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
     `<w:body>${pNodes}</w:body>` +
     '</w:document>';
 
-  const docRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  const docRelsXml = options.docRelsXml || '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
 
   zip.file('[Content_Types].xml', contentTypesXml);
@@ -90,8 +93,12 @@ function createMockBlob(bytes, name = 'test.docx') {
   };
 }
 
-test('DOCX_REDLINE_VERSION is strictly 0.8.0', () => {
-  assert.equal(DOCX_REDLINE_VERSION, '0.8.0');
+test('DOCX_REDLINE_VERSION is strictly 0.9.0', () => {
+  assert.equal(DOCX_REDLINE_VERSION, '0.9.0');
+});
+
+test('loaded engine is the exact pinned 0.9.0 bundle', async () => {
+  assert.strictEqual(await loadEngineDependencies(), pinnedDocxRedline);
 });
 
 test('ingestDocxFile parses valid docx and inspects paragraphs', async () => {
@@ -205,6 +212,41 @@ test('applyOperationsInBatches handles direct edit mode (generateRedlines: false
   assert.equal(inspectRejected.paragraphs[0].text, 'Direct updated statement.');
 });
 
+test('direct edits preserve a foreign existing revision', async () => {
+  const documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:body><w:p><w:r><w:t xml:space="preserve">Hello </w:t></w:r>' +
+    '<w:ins w:id="21" w:author="Other Reviewer" w:date="2025-01-01T00:00:00Z">' +
+    '<w:r><w:t>world</w:t></w:r></w:ins></w:p><w:sectPr/></w:body></w:document>';
+  const bytes = await createTestDocxBytes([], { documentXml });
+  const { doc } = await ingestDocxFile(createMockBlob(bytes));
+
+  const res = await applyOperationsInBatches({
+    doc,
+    operations: [{
+      type: 'redline',
+      targetRef: 1,
+      target: 'Hello world',
+      replacements: [{ find: 'Hello', replace: 'Hi' }]
+    }],
+    author: 'Current Reviewer',
+    generateRedlines: false
+  });
+
+  assert.equal(res.results[0].success, true);
+  assert.equal(doc.inspect({ revisionView: 'accepted' }).paragraphs[0].text, 'Hi world');
+  assert.equal(doc.inspect({ revisionView: 'rejected' }).paragraphs[0].text, 'Hi ');
+  const output = await generateBlobFromDoc(doc);
+  const reopened = await loadDocxFromBlob(output);
+  assert.equal(reopened.inspect({ revisionView: 'accepted' }).paragraphs[0].text, 'Hi world');
+  const JSZip = ['../../Docx Redline JS/node_modules/jszip', '../Docx Redline JS/node_modules/jszip', 'jszip']
+    .map(path => { try { return require(path); } catch { return null; } })
+    .find(Boolean);
+  const zip = await JSZip.loadAsync(new Uint8Array(await output.arrayBuffer()));
+  const savedXml = await zip.file('word/document.xml').async('string');
+  assert.match(savedXml, /w:author="Other Reviewer"/);
+});
+
 test('applyOperationsInBatches records failure gracefully when target is not found', async () => {
   const bytes = await createTestDocxBytes(['Real paragraph.']);
   const file = createMockBlob(bytes);
@@ -229,6 +271,7 @@ test('applyOperationsInBatches records failure gracefully when target is not fou
   assert.equal(applyRes.failures.length, 1);
   assert.match(applyRes.failures[0], /redline on P99:/);
   assert.doesNotMatch(applyRes.failures[0], /\[object Object\]/);
+  assert.equal(applyRes.validation.ok, true, 'an ordinary targeting failure is not a package validation failure');
 });
 
 test('acceptAllTrackedChangesInDoc accepts pending revisions', async () => {
@@ -276,6 +319,53 @@ test('generateBlobFromDoc produces valid docx blob that can be re-opened', async
   const inspection = reloadedDoc.inspect();
   assert.equal(inspection.paragraphs.length, 1);
   assert.equal(inspection.paragraphs[0].text, 'Round-trip test paragraph.');
+});
+
+test('0.9.0 round trip preserves soft breaks, hyperlinks, and table text', async () => {
+  const documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<w:body><w:p><w:r><w:t>Line one</w:t><w:br/><w:t>Line two </w:t></w:r>' +
+    '<w:hyperlink r:id="rIdHyper" w:history="1"><w:r><w:t>portfolio</w:t></w:r></w:hyperlink></w:p>' +
+    '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Table cell content</w:t></w:r></w:p></w:tc></w:tr></w:tbl>' +
+    '<w:sectPr/></w:body></w:document>';
+  const docRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rIdHyper" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" ' +
+    'Target="https://example.com/portfolio" TargetMode="External"/></Relationships>';
+  const bytes = await createTestDocxBytes([], { documentXml, docRelsXml });
+  const { doc } = await ingestDocxFile(createMockBlob(bytes));
+  const tableParagraph = doc.inspect({ revisionView: 'accepted' }).paragraphs.find(paragraph => /Table cell content/.test(paragraph.text));
+  assert.ok(tableParagraph, 'table paragraph should be editable');
+  const editResult = await applyOperationsInBatches({
+    doc,
+    operations: [{
+      type: 'redline',
+      targetRef: 1,
+      target: 'Line one\nLine two portfolio',
+      replacements: [{ find: 'Line one', replace: 'Opening' }]
+    }],
+    author: 'Reviewer',
+    generateRedlines: false
+  });
+  assert.equal(editResult.results[0].success, true);
+  const output = await generateBlobFromDoc(doc);
+  const reopened = await loadDocxFromBlob(output);
+  const paragraphs = reopened.inspect({ revisionView: 'accepted' }).paragraphs;
+  assert.ok(paragraphs.some(paragraph => /Opening/.test(paragraph.text)));
+  assert.ok(paragraphs.some(paragraph => /portfolio/.test(paragraph.text)));
+  assert.ok(paragraphs.some(paragraph => /Opening/.test(paragraph.text)));
+  assert.ok(paragraphs.some(paragraph => /Table cell content/.test(paragraph.text)));
+
+  const JSZip = ['../../Docx Redline JS/node_modules/jszip', '../Docx Redline JS/node_modules/jszip', 'jszip']
+    .map(path => { try { return require(path); } catch { return null; } })
+    .find(Boolean);
+  assert.ok(JSZip, 'JSZip required for inspecting round-trip package');
+  const zip = await JSZip.loadAsync(new Uint8Array(await output.arrayBuffer()));
+  const savedXml = await zip.file('word/document.xml').async('string');
+  assert.match(savedXml, /<w:br\b/);
+  assert.match(savedXml, /<w:hyperlink\b/);
+  assert.match(savedXml, /<w:tbl\b/);
 });
 
 test('normalizeAndFilterOperations filters invalid ops and preserves localized replacements', () => {
@@ -454,6 +544,83 @@ test('applyOperationsInBatches handles mixed valid and invalid operations in sam
   // Valid change landed
   const inspect = doc.inspect({ revisionView: 'accepted' });
   assert.equal(inspect.paragraphs[0].text, 'Modified clause.');
+});
+
+test('applyOperationsInBatches enforces revision fidelity and preserves structured errors', async () => {
+  const fidelityError = {
+    code: 'REVISION_FIDELITY_VIOLATION',
+    message: 'A pre-existing revision could not be preserved.'
+  };
+  let receivedOptions;
+  const doc = {
+    async applyOperations(batch, options) {
+      receivedOptions = options;
+      return { results: [{ status: 'refused', error: fidelityError }] };
+    }
+  };
+
+  const res = await applyOperationsInBatches({
+    doc,
+    operations: [{ type: 'redline', targetRef: 1, target: 'Before', modified: 'After' }]
+  });
+
+  assert.equal(receivedOptions.verifyRevisionFidelity, 'enforce');
+  assert.equal(res.results[0].success, false);
+  assert.deepEqual(res.results[0].error, fidelityError);
+  assert.match(res.failures[0], /A pre-existing revision could not be preserved/);
+});
+
+test('applyOperationsInBatches preserves validation issues reported by earlier batches', async () => {
+  const firstIssue = { code: 'REVISION_FIDELITY_WARNING', message: 'A prior revision was normalized.' };
+  let calls = 0;
+  const doc = {
+    async applyOperations() {
+      calls += 1;
+      return calls === 1
+        ? { results: [{ status: 'applied' }], validation: { generatedIssues: [firstIssue] } }
+        : { results: [{ status: 'applied' }], validation: { generatedIssues: [] } };
+    }
+  };
+
+  const res = await applyOperationsInBatches({
+    doc,
+    batchSize: 1,
+    operations: [
+      { type: 'redline', targetRef: 1, target: 'One', modified: 'First' },
+      { type: 'redline', targetRef: 2, target: 'Two', modified: 'Second' }
+    ]
+  });
+
+  assert.equal(res.results.length, 2);
+  assert.equal(res.validation.ok, false);
+  assert.deepEqual(res.validation.issues, [firstIssue]);
+});
+
+test('applyOperationsInBatches marks a thrown batch as a validation failure', async () => {
+  const doc = { async applyOperations() { throw new Error('Batch serialization failed.'); } };
+  const res = await applyOperationsInBatches({
+    doc,
+    operations: [{ type: 'redline', targetRef: 1, target: 'Before', modified: 'After' }]
+  });
+
+  assert.equal(res.results[0].success, false);
+  assert.match(res.failures[0], /Batch serialization failed/);
+  assert.equal(res.validation.ok, false);
+});
+
+test('operation warning and targeting helpers summarize engine diagnostics', () => {
+  const results = [
+    { success: true, warnings: ['A comment anchor was adjusted.'], diagnostics: [{ code: 'LIST_MARKER_NOT_BOUND', message: 'List marker remains literal.' }] },
+    { success: false, error: { code: 'TARGET_NOT_FOUND', message: 'Text is absent.' }, diagnostics: ['No exact match.'] },
+    { success: false, error: { code: 'REVISION_FIDELITY_VIOLATION', message: 'Revision changed.' } }
+  ];
+
+  assert.equal(isTargetingFailure(results[1]), true);
+  assert.equal(isTargetingFailure(results[2]), false);
+  const warnings = summarizeOperationWarnings(results);
+  assert.ok(warnings.some(warning => /comment anchor was adjusted/i.test(warning)));
+  assert.ok(warnings.some(warning => /LIST_MARKER_NOT_BOUND: List marker remains literal/i.test(warning)));
+  assert.equal(warnings.some(warning => /No exact match/i.test(warning)), false);
 });
 
 test('reconcileOperationsWithParagraphs snaps typographical differences', () => {
