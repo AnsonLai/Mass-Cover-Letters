@@ -399,6 +399,35 @@ button {
   content: none;
 }
 
+.version-notice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  max-width: 540px;
+  padding: 8px 14px;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  background: var(--gold-soft);
+  color: var(--ink);
+  box-shadow: var(--shadow-soft);
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+.version-notice a {
+  color: var(--brand-strong);
+  font-weight: 800;
+  white-space: nowrap;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 1280px) {
+  .topbar:has(.version-notice) { flex-wrap: wrap; }
+  .version-notice { order: 3; flex-basis: 100%; max-width: none; width: 100%; }
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -2085,6 +2114,39 @@ input[type='text'] {
   background: transparent;
 }
 
+.main-panel > .main-header-row {
+  grid-row: 1;
+}
+
+.main-panel > .preview-card {
+  grid-row: 2;
+  min-height: 0;
+}
+
+.main-panel > #recommendationCard {
+  grid-row: 3;
+}
+
+.main-panel:has(> #statusBanner:not([hidden])) {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.main-panel:has(> #statusBanner:not([hidden])) > #statusBanner {
+  grid-row: 1;
+}
+
+.main-panel:has(> #statusBanner:not([hidden])) > .main-header-row {
+  grid-row: 2;
+}
+
+.main-panel:has(> #statusBanner:not([hidden])) > .preview-card {
+  grid-row: 3;
+}
+
+.main-panel:has(> #statusBanner:not([hidden])) > #recommendationCard {
+  grid-row: 4;
+}
+
 .main-panel > * {
   animation: fade-up 520ms var(--ease-standard) both;
 }
@@ -2239,7 +2301,9 @@ input[type='text'] {
   background: var(--grad-brand-soft);
   padding: 14px 16px;
   position: relative;
-  overflow: hidden;
+  max-height: min(30vh, 240px);
+  overflow: auto;
+  overscroll-behavior: contain;
   box-shadow: var(--shadow-soft);
 }
 
@@ -2269,9 +2333,52 @@ input[type='text'] {
   color: var(--brand-strong);
 }
 
+.recommendation-card > summary {
+  cursor: pointer;
+}
+
+.recommendation-card > summary:focus-visible {
+  outline: 2px solid var(--brand-strong);
+  outline-offset: 4px;
+}
+
+.recommendation-card[open] > .recommendation-body {
+  margin-top: 10px;
+}
+
+.recommendation-card:not([open]) {
+  padding-block: 10px;
+}
+
 .recommendation-card p {
   margin: 6px 0 0;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.edit-diagnostics {
+  min-width: 0;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.edit-diagnostics summary {
+  color: var(--brand-strong);
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.edit-diagnostics pre {
+  max-height: 150px;
+  margin: 7px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--muted);
+  font: 0.72rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .preview-card {
@@ -2586,7 +2693,11 @@ button:focus-visible,
   .main-panel {
     height: auto;
     overflow: auto;
-    grid-template-rows: auto;
+    grid-template-rows: auto minmax(60vh, auto) auto;
+  }
+
+  .main-panel:has(> #statusBanner:not([hidden])) {
+    grid-template-rows: auto auto minmax(60vh, auto) auto;
   }
 
   .topbar {

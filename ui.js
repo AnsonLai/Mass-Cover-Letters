@@ -86,6 +86,8 @@ export function getUiRefs() {
     cancelJobMetaBtn: getById('cancelJobMetaBtn'),
     recommendationCard: getById('recommendationCard'),
     recommendationText: getById('recommendationText'),
+    editDiagnostics: getById('editDiagnostics'),
+    editDiagnosticsText: getById('editDiagnosticsText'),
     previewTitle: getById('previewTitle'),
     previewModeChip: getById('previewModeChip'),
     previewCoverLetterBtn: getById('previewCoverLetterBtn'),
@@ -284,6 +286,28 @@ export function setActionEnabled(refs, key, enabled) {
   refs[key].disabled = !enabled;
 }
 
+export function getReportableEditWarnings(job) {
+  return (Array.isArray(job?.applyWarnings) ? job.applyWarnings : [])
+    .filter(Boolean)
+    // This is a safe fallback in replacement grouping, not a failed edit.
+    .filter(message => !/(?:^|:\s*)PAIRING_SKIPPED_STRUCTURAL_BOUNDARY\s*$/.test(String(message)));
+}
+
+export function getEditFeedback(job) {
+  const failures = Array.isArray(job?.failedOperations) ? job.failedOperations.filter(Boolean) : [];
+  const warnings = getReportableEditWarnings(job);
+  const validationError = String(job?.validationError || '').trim();
+  const messages = [];
+  if (failures.length) messages.push(`${failures.length} edit${failures.length === 1 ? '' : 's'} could not be applied. Review the document before exporting.`);
+  if (validationError) messages.push('The document needs a compatibility review before exporting. Check the preview and technical details below.');
+  if (warnings.length) messages.push('Some edits need a closer look. Review the document before exporting; technical details are available below.');
+  const details = [];
+  if (failures.length) details.push(`Edits not applied:\n- ${failures.join('\n- ')}`);
+  if (validationError) details.push(`Document validation:\n${validationError}`);
+  if (warnings.length) details.push(`Edit warnings:\n- ${warnings.join('\n- ')}`);
+  return { messages, details: details.join('\n\n') };
+}
+
 export function renderSelectedJob(refs, job, options = {}) {
   const editing = Boolean(options?.editing);
   if (!job) {
@@ -293,7 +317,10 @@ export function renderSelectedJob(refs, job, options = {}) {
     refs.selectedJobTitle.textContent = 'No Job Selected';
     refs.selectedJobMeta.textContent = 'Add a job description to begin tailoring.';
     refs.recommendationCard.hidden = true;
+    refs.recommendationCard.open = false;
     refs.recommendationText.textContent = '';
+    if (refs.editDiagnostics) refs.editDiagnostics.hidden = true;
+    if (refs.editDiagnosticsText) refs.editDiagnosticsText.textContent = '';
     return;
   }
 
@@ -316,21 +343,20 @@ export function renderSelectedJob(refs, job, options = {}) {
   ].filter(Boolean).join(' • ');
 
   const recommendation = String(job.recommendation || '').trim();
-  const failures = Array.isArray(job.failedOperations) ? job.failedOperations.filter(Boolean) : [];
-  const applyWarnings = Array.isArray(job.applyWarnings) ? job.applyWarnings.filter(Boolean) : [];
-  const validationError = String(job.validationError || '').trim();
+  if (refs.recommendationCard.dataset.jobId !== job.id) refs.recommendationCard.open = false;
+  refs.recommendationCard.dataset.jobId = job.id;
+  const feedback = getEditFeedback(job);
 
   const lines = [];
   if (recommendation) lines.push(recommendation);
-  if (failures.length > 0) {
-    lines.push(`⚠ ${failures.length} edit${failures.length === 1 ? '' : 's'} not applied:\n- ${failures.join('\n- ')}`);
+  lines.push(...feedback.messages);
+  if (refs.editDiagnostics) {
+    // Close diagnostics on job changes; preserve the user's choice during rerenders.
+    if (refs.editDiagnostics.dataset.jobId !== job.id) refs.editDiagnostics.open = false;
+    refs.editDiagnostics.dataset.jobId = job.id;
+    refs.editDiagnostics.hidden = !feedback.details;
   }
-  if (validationError) {
-    lines.push(`⚠ Validation warning: ${validationError}`);
-  }
-  if (applyWarnings.length > 0) {
-    lines.push(`⚠ Edit warnings:\n- ${applyWarnings.join('\n- ')}`);
-  }
+  if (refs.editDiagnosticsText) refs.editDiagnosticsText.textContent = feedback.details;
 
   // Preserve the line breaks used above regardless of stylesheet defaults.
   refs.recommendationText.style.whiteSpace = 'pre-wrap';

@@ -69,7 +69,7 @@
     href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap"
     rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.css" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=2026-10-12-v2-trial" />
 </head>
 
 <body>
@@ -89,6 +89,11 @@
           <p>Tailor one base letter to many roles</p>
         </div>
       </div>
+
+      <aside class="version-notice" aria-label="V2 testing available">
+        <span><strong>V2 testing is available</strong> — try the editable document preview.</span>
+        <a href="./wordcraft-demo.html" data-version-link>Try V2 beta →</a>
+      </aside>
 
       <div class="top-controls">
         <div class="split-action run-primary">
@@ -226,15 +231,19 @@
           <div id="previewHost" class="preview-host"></div>
         </section>
 
-        <section id="recommendationCard" class="recommendation-card" hidden>
+        <details id="recommendationCard" class="recommendation-card" hidden>
+          <summary class="recommendation-heading">Quill's Take</summary>
           <div class="recommendation-body">
             <div class="as-mascot reco-mascot" data-mood="happy" aria-hidden="true"></div>
             <div>
-              <div class="recommendation-heading">Quill's Take</div>
               <p id="recommendationText">No recommendation yet.</p>
+              <details id="editDiagnostics" class="edit-diagnostics" hidden>
+                <summary>Technical details</summary>
+                <pre id="editDiagnosticsText"></pre>
+              </details>
             </div>
           </div>
-        </section>
+        </details>
       </section>
     </main>
   </div>
@@ -422,7 +431,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="./mascot.js?v=2026-07-12-1"></script>
-  <script type="module" src="./main.js?v=2026-07-12-1"></script>
+  <script type="module" src="./main.js?v=2026-10-12-v2-trial"></script>
 </body>
 
 </html>

@@ -1,0 +1,237 @@
+diff --git a/apps/wordcraft-web/src/web.rs b/apps/wordcraft-web/src/web.rs
+index 30ab58e..44d4525 100644
+--- a/apps/wordcraft-web/src/web.rs
++++ b/apps/wordcraft-web/src/web.rs
+@@ -2,8 +2,10 @@
+ //! web runner.
+ 
+ use std::cell::{Cell, RefCell};
++use std::collections::BTreeMap;
+ use std::rc::Rc;
+ 
++use serde_json::json;
+ use wasm_bindgen::JsCast as _;
+ use wordcraft_engine::Session;
+ use wordcraft_ui_egui::{Inbox, Services, WordApp};
+@@ -26,6 +28,7 @@ pub fn start() {
+             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
+             return;
+         };
++        let embed = query().contains("embed");
+         let dirty = Rc::new(Cell::new(false));
+         let saves = Rc::new(PickerSaves::default());
+         if let Err(e) = guard_unload(dirty.clone(), saves.clone()) {
+@@ -48,6 +51,7 @@ pub fn start() {
+                     // Fonts the user added on an earlier visit (#582); the app notices them arrive.
+                     font_store::load_all(cc.egui_ctx.clone());
+                     let inbox: Inbox = Inbox::default();
++                    let bridge: BridgeQueue = Default::default();
+                     if let Err(e) = listen_for_pasted_pictures(inbox.clone(), cc.egui_ctx.clone()) {
+                         log::error!("pasting pictures is unavailable: {e}");
+                     }
+@@ -61,10 +65,20 @@ pub fn start() {
+                     let mut app = WordApp::new(session, services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone()));
+                     app.autosave = false;
+                     // No document to show: start on File › Home, as the desktop app does (#766).
+-                    if !sample {
++                    if !sample && !embed {
+                         app.start_screen();
+                     }
+-                    Ok(Box::new(WebShell { app, inbox, saves }))
++                    if embed {
++                        app.ui.backstage = false;
++                        app.ui.ribbon_collapsed = true;
++                        app.ui.show_discord = false;
++                        app.session.initials = "QU".into();
++                        app.session.view.ruler = false;
++                        if let Err(e) = install_bridge(bridge.clone(), cc.egui_ctx.clone()) {
++                            log::error!("couldn't install export bridge: {e}");
++                        }
++                    }
++                    Ok(Box::new(WebShell { app, inbox, saves, bridge, snapshots: BTreeMap::new() }))
+                 }),
+             )
+             .await;
+@@ -87,6 +101,89 @@ struct WebShell {
+     app: WordApp,
+     inbox: Inbox,
+     saves: Rc<PickerSaves>,
++    bridge: BridgeQueue,
++    snapshots: BTreeMap<u64, u64>,
++}
++
++type BridgeQueue = Rc<RefCell<Vec<BridgeRequest>>>;
++
++enum BridgeRequest {
++    Export { name: String, resolve: js_sys::Function, reject: js_sys::Function },
++    Load { name: String, bytes: Vec<u8>, resolve: js_sys::Function, reject: js_sys::Function },
++    Snapshot { name: String, resolve: js_sys::Function, reject: js_sys::Function },
++    State { resolve: js_sys::Function, reject: js_sys::Function },
++    Acknowledge { revision: u64, resolve: js_sys::Function, reject: js_sys::Function },
++}
++
++fn install_bridge(bridge: BridgeQueue, ctx: egui::Context) -> Result<(), String> {
++    let window = web_sys::window().ok_or("no window")?;
++    let export_bridge = bridge.clone();
++    let export_ctx = ctx.clone();
++    let export = wasm_bindgen::closure::Closure::<dyn FnMut(String) -> js_sys::Promise>::new(move |name: String| {
++        let bridge = export_bridge.clone();
++        let ctx = export_ctx.clone();
++        let name = name.clone();
++        js_sys::Promise::new(&mut move |resolve, reject| {
++            bridge.borrow_mut().push(BridgeRequest::Export { name: name.clone(), resolve, reject });
++            ctx.request_repaint();
++        })
++    });
++    js_sys::Reflect::set(&window, &wasm_bindgen::JsValue::from_str("wordcraftExport"), export.as_ref())
++        .map_err(|e| format!("{e:?}"))?;
++    export.forget();
++    let load_bridge = bridge.clone();
++    let load_ctx = ctx.clone();
++    let load = wasm_bindgen::closure::Closure::<dyn FnMut(String, js_sys::Uint8Array) -> js_sys::Promise>::new(move |name: String, bytes: js_sys::Uint8Array| {
++        let bridge = load_bridge.clone();
++        let ctx = load_ctx.clone();
++        js_sys::Promise::new(&mut move |resolve, reject| {
++            bridge.borrow_mut().push(BridgeRequest::Load { name: name.clone(), bytes: bytes.to_vec(), resolve, reject });
++            ctx.request_repaint();
++        })
++    });
++    js_sys::Reflect::set(&window, &wasm_bindgen::JsValue::from_str("wordcraftLoad"), load.as_ref())
++        .map_err(|e| format!("{e:?}"))?;
++    load.forget();
++    let snapshot_bridge = bridge.clone();
++    let snapshot_ctx = ctx.clone();
++    let snapshot = wasm_bindgen::closure::Closure::<dyn FnMut(String) -> js_sys::Promise>::new(move |name: String| {
++        let bridge = snapshot_bridge.clone();
++        let ctx = snapshot_ctx.clone();
++        js_sys::Promise::new(&mut move |resolve, reject| {
++            bridge.borrow_mut().push(BridgeRequest::Snapshot { name: name.clone(), resolve, reject });
++            ctx.request_repaint();
++        })
++    });
++    js_sys::Reflect::set(&window, &wasm_bindgen::JsValue::from_str("wordcraftSnapshot"), snapshot.as_ref())
++        .map_err(|e| format!("{e:?}"))?;
++    snapshot.forget();
++    let state_bridge = bridge.clone();
++    let state_ctx = ctx.clone();
++    let state = wasm_bindgen::closure::Closure::<dyn FnMut() -> js_sys::Promise>::new(move || {
++        let bridge = state_bridge.clone();
++        let ctx = state_ctx.clone();
++        js_sys::Promise::new(&mut move |resolve, reject| {
++            bridge.borrow_mut().push(BridgeRequest::State { resolve, reject });
++            ctx.request_repaint();
++        })
++    });
++    js_sys::Reflect::set(&window, &wasm_bindgen::JsValue::from_str("wordcraftState"), state.as_ref())
++        .map_err(|e| format!("{e:?}"))?;
++    state.forget();
++    let acknowledge_bridge = bridge.clone();
++    let acknowledge_ctx = ctx.clone();
++    let acknowledge = wasm_bindgen::closure::Closure::<dyn FnMut(f64) -> js_sys::Promise>::new(move |revision: f64| {
++        let bridge = acknowledge_bridge.clone();
++        let ctx = acknowledge_ctx.clone();
++        js_sys::Promise::new(&mut move |resolve, reject| {
++            bridge.borrow_mut().push(BridgeRequest::Acknowledge { revision: revision as u64, resolve, reject });
++            ctx.request_repaint();
++        })
++    });
++    js_sys::Reflect::set(&window, &wasm_bindgen::JsValue::from_str("wordcraftAcknowledgeSave"), acknowledge.as_ref())
++        .map_err(|e| format!("{e:?}"))?;
++    acknowledge.forget();
++    Ok(())
+ }
+ 
+ /// Saves the browser's save picker finishes after `download` has returned (#728). The app marks
+@@ -118,6 +215,84 @@ impl WebShell {
+             }
+         }
+     }
++
++    fn bridge_state(&self) -> Result<wasm_bindgen::JsValue, String> {
++        let state = js_sys::Object::new();
++        js_sys::Reflect::set(&state, &wasm_bindgen::JsValue::from_str("revision"), &wasm_bindgen::JsValue::from_f64(self.app.session.rev() as f64))
++            .map_err(|e| format!("{e:?}"))?;
++        js_sys::Reflect::set(&state, &wasm_bindgen::JsValue::from_str("documentId"), &wasm_bindgen::JsValue::from_f64(self.app.session.document_id() as f64))
++            .map_err(|e| format!("{e:?}"))?;
++        js_sys::Reflect::set(&state, &wasm_bindgen::JsValue::from_str("dirty"), &wasm_bindgen::JsValue::from_bool(self.app.session.dirty))
++            .map_err(|e| format!("{e:?}"))?;
++        Ok(state.into())
++    }
++
++    fn resolve(resolve: &js_sys::Function, value: &wasm_bindgen::JsValue) {
++        if let Err(e) = resolve.call1(&wasm_bindgen::JsValue::UNDEFINED, value) {
++            log::error!("couldn't resolve WordCraft bridge promise: {e:?}");
++        }
++    }
++
++    fn reject(reject: &js_sys::Function, error: impl AsRef<str>) {
++        if let Err(e) = reject.call1(&wasm_bindgen::JsValue::UNDEFINED, &wasm_bindgen::JsValue::from_str(error.as_ref())) {
++            log::error!("couldn't reject WordCraft bridge promise: {e:?}");
++        }
++    }
++
++    fn fulfill_bridge(&mut self) {
++        let requests = std::mem::take(&mut *self.bridge.borrow_mut());
++        for request in requests {
++            match request {
++                BridgeRequest::Export { name, resolve, reject } => match wordcraft_engine::io::save_bytes(&name, &self.app.session.doc) {
++                    Ok(bytes) => Self::resolve(&resolve, &js_sys::Uint8Array::from(bytes.as_slice())),
++                    Err(error) => Self::reject(&reject, error),
++                },
++                BridgeRequest::Load { name, bytes, resolve, reject } => {
++                    let data = wordcraft_engine::cmd::insert::base64_encode(&bytes);
++                    match self.app.execute("file.open", json!({"path": name, "data": data})) {
++                        Ok(_) => {
++                            self.snapshots.clear();
++                            match self.bridge_state() {
++                                Ok(state) => Self::resolve(&resolve, &state),
++                                Err(error) => Self::reject(&reject, error),
++                            }
++                        }
++                        Err(error) => Self::reject(&reject, error),
++                    }
++                }
++                BridgeRequest::Snapshot { name, resolve, reject } => match wordcraft_engine::io::save_bytes(&name, &self.app.session.doc) {
++                    Ok(bytes) => {
++                        let revision = self.app.session.rev();
++                        let document_id = self.app.session.document_id();
++                        self.snapshots.insert(revision, document_id);
++                        match self.bridge_state() {
++                            Ok(snapshot) => {
++                                if let Err(e) = js_sys::Reflect::set(&snapshot, &wasm_bindgen::JsValue::from_str("bytes"), &js_sys::Uint8Array::from(bytes.as_slice())) {
++                                    Self::reject(&reject, format!("{e:?}"));
++                                } else {
++                                    Self::resolve(&resolve, &snapshot);
++                                }
++                            }
++                            Err(error) => Self::reject(&reject, error),
++                        }
++                    }
++                    Err(error) => Self::reject(&reject, error),
++                },
++                BridgeRequest::State { resolve, reject } => match self.bridge_state() {
++                    Ok(state) => Self::resolve(&resolve, &state),
++                    Err(error) => Self::reject(&reject, error),
++                },
++                BridgeRequest::Acknowledge { revision, resolve, reject: _ } => {
++                    let current_document = self.app.session.document_id();
++                    let acknowledged = self.app.session.rev() == revision && self.snapshots.get(&revision).is_some_and(|id| *id == current_document);
++                    if acknowledged {
++                        self.app.session.dirty = false;
++                    }
++                    Self::resolve(&resolve, &wasm_bindgen::JsValue::from_bool(acknowledged));
++                }
++            }
++        }
++    }
+ }
+ 
+ impl eframe::App for WebShell {
+@@ -139,6 +314,7 @@ impl eframe::App for WebShell {
+         }
+         self.settle_picker_saves();
+         self.app.logic(ctx);
++        self.fulfill_bridge();
+     }
+ 
+     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {

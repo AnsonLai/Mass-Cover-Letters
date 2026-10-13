@@ -34,13 +34,15 @@ import {
 } from './docx-engine.js';
 import {
   createDocumentStore
-} from './document-store.js';
+} from './document-store.js?v=2026-10-12-drafts-ready';
+import { readDraftBlob, removeDraft, bumpSourceVersion, draftKeyFor } from './wordcraft-drafts.js?v=2026-10-12-drafts-epoch';
 import {
   isTourActive,
   startGuidedTour
 } from './tour.js';
 import {
   formatJobDisplayName,
+  getReportableEditWarnings,
   getUiRefs,
   renderJobList,
   renderSelectedJob,
@@ -54,7 +56,7 @@ import {
   hideProgressStrip,
   setStatusBanner,
   showToast
-} from './ui.js';
+} from './ui.js?v=2026-10-12-quill-feedback';
 
 const AUTHOR_NAME = 'Application Station';
 const RUN_ALL_CONCURRENCY = 2;
@@ -62,6 +64,43 @@ const BASE_SOURCE_KEY = 'base:source';
 const RESUME_SOURCE_KEY = 'resume:source';
 const SAMPLE_SOURCE_KEY_PREFIX = 'sample:source';
 const SESSION_STATE_KEY = 'session:state';
+const usesWordcraftPreview = typeof document !== 'undefined'
+  && document.documentElement.dataset.previewEngine === 'wordcraft';
+let wordcraftPreviewModule;
+let selectedPreviewVersion = 0;
+
+function getWordcraftModule() {
+  wordcraftPreviewModule ||= import('./wordcraft-preview.js?v=2026-10-12-drafts-final');
+  return wordcraftPreviewModule;
+}
+
+async function effectiveDocumentBlob(key) {
+  const blob = await state.store.getBlob(key);
+  return usesWordcraftPreview && blob ? readDraftBlob(state.store, key, blob) : blob;
+}
+
+async function flushEditorBeforeAction(refs, options = {}) {
+  if (!usesWordcraftPreview || !wordcraftPreviewModule) return true;
+  try {
+    await (await wordcraftPreviewModule).flushWordcraftPreview(refs.previewHost, options);
+    return true;
+  } catch (error) {
+    console.warn('[WordCraft action blocked]', error);
+    setStatusBanner(refs, 'Your edits could not be saved. Retry saving before switching documents or exporting.', 'error');
+    return false;
+  }
+}
+
+async function setEditorEditingEnabled(refs, enabled) {
+  if (usesWordcraftPreview && wordcraftPreviewModule) {
+    (await wordcraftPreviewModule).setWordcraftEditingEnabled(refs.previewHost, enabled);
+  }
+}
+
+async function removeDocumentDraft(key) {
+  await removeDraft(state.store, key);
+  await state.store.remove(`${draftKeyFor(key)}:source-version`);
+}
 const ONBOARDING_STEPS = ['api', 'docs', 'job', 'generate'];
 
 const state = createAppState();
@@ -1319,6 +1358,7 @@ function createPreviewEmptyState(refs, isResumePreview) {
 }
 
 async function renderSelectedPreview(refs) {
+  const previewVersion = ++selectedPreviewVersion;
   const selectedJob = getSelectedJob();
   const isResumePreview = state.previewType === 'resume';
   const selectedCoverLetterBlob = selectedJob
@@ -1332,7 +1372,14 @@ async function renderSelectedPreview(refs) {
     ? (selectedResumeBlob || await state.store.getBlob(RESUME_SOURCE_KEY))
     : (selectedCoverLetterBlob || await state.store.getBlob(BASE_SOURCE_KEY));
 
+  if (previewVersion !== selectedPreviewVersion) return;
+  if (usesWordcraftPreview) {
+    await getWordcraftModule();
+    if (previewVersion !== selectedPreviewVersion) return;
+  }
+
   if (!previewBlob) {
+    if (usesWordcraftPreview) await (await wordcraftPreviewModule).clearWordcraftPreview(refs.previewHost);
     refs.previewHost.classList.remove('preview-host-skeleton');
     refs.previewHost.replaceChildren(createPreviewEmptyState(refs, isResumePreview));
     setPreviewStatus(
@@ -1345,7 +1392,27 @@ async function renderSelectedPreview(refs) {
 
   try {
     refs.previewHost.classList.remove('preview-host-skeleton');
-    await renderPreviewFromBlob(previewBlob, refs.previewHost, message => setPreviewStatus(refs, message, 'info'));
+    const report = message => {
+      if (previewVersion === selectedPreviewVersion) setPreviewStatus(refs, message, 'info');
+    };
+    if (usesWordcraftPreview) {
+      const rendered = await (await wordcraftPreviewModule).renderWordcraftPreview(
+        previewBlob, refs.previewHost, report, {
+          store: state.store,
+          key: isResumePreview
+            ? (selectedResumeBlob ? selectedJob.storage.resumeResultKey : RESUME_SOURCE_KEY)
+            : (selectedCoverLetterBlob ? selectedJob.storage.resultKey : BASE_SOURCE_KEY),
+          filename: isResumePreview ? 'resume.docx' : 'cover-letter.docx',
+          jobId: selectedJob?.id || null,
+          previewType: state.previewType
+        }
+      );
+      if (!rendered) return;
+      (await wordcraftPreviewModule).setWordcraftEditingEnabled(refs.previewHost, !state.isRunning);
+    } else {
+      await renderPreviewFromBlob(previewBlob, refs.previewHost, report);
+    }
+    if (previewVersion !== selectedPreviewVersion) return;
 
     const formatOperationsMessage = value => {
       const parsed = Number.parseInt(String(value ?? 0), 10);
@@ -1373,7 +1440,27 @@ async function renderSelectedPreview(refs) {
       );
     }
   } catch (error) {
+    if (previewVersion !== selectedPreviewVersion) return;
     refs.previewHost.classList.remove('preview-host-skeleton');
+    if (usesWordcraftPreview) {
+      const editorModule = await wordcraftPreviewModule;
+      const active = editorModule.getActiveWordcraftBinding(refs.previewHost);
+      if (active) {
+        state.selectedJobId = state.jobs.some(job => job.id === active.jobId) ? active.jobId : null;
+        state.previewType = active.previewType;
+        renderUi(refs);
+        try { await persistSessionState(); } catch { /* Preserve the editor even if storage is full. */ }
+        setPreviewStatus(refs, `Couldn’t switch documents. Your edits remain open: ${error?.message || String(error)}`, 'error');
+        return;
+      }
+      await editorModule.clearWordcraftPreview(refs.previewHost);
+      try {
+        await renderPreviewFromBlob(previewBlob, refs.previewHost);
+        if (previewVersion !== selectedPreviewVersion) return;
+        setPreviewStatus(refs, `WordCraft unavailable; showing standard preview: ${error?.message || String(error)}`, 'error');
+        return;
+      } catch { /* Keep the original startup error if the fallback also fails. */ }
+    }
     setPreviewStatus(refs, `Preview unavailable: ${error?.message || String(error)}`, 'error');
   }
 }
@@ -1408,14 +1495,16 @@ function deleteIndexedDbDatabase(name) {
 
 async function clearAllData() {
   if (!confirm('Clear all saved documents, jobs, settings, and API key from this browser?')) return;
-  for (const key of Object.values(STORAGE_KEYS)) {
+  const testStore = document.documentElement.dataset.documentStore;
+  for (const key of testStore ? [] : Object.values(STORAGE_KEYS)) {
     try {
       localStorage.removeItem(key);
     } catch {
       // Ignore storage errors.
     }
   }
-  await deleteIndexedDbDatabase('cover-letter-ai-store');
+  state.store?.close?.();
+  await deleteIndexedDbDatabase(testStore || 'cover-letter-ai-store');
   location.reload();
 }
 
@@ -1430,7 +1519,10 @@ async function setBaseFile(refs, file) {
 
   const picked = docxFiles[0];
   const parsed = await ingestDocxFile(picked);
+  if (!await flushEditorBeforeAction(refs)) return;
   await state.store.putBlob(BASE_SOURCE_KEY, picked);
+  await removeDraft(state.store, BASE_SOURCE_KEY);
+  await bumpSourceVersion(state.store, BASE_SOURCE_KEY);
 
   state.baseDocument.fileName = picked.name;
   state.baseDocument.paragraphs = parsed.paragraphs;
@@ -1453,9 +1545,12 @@ async function setResumeFile(refs, file) {
   }
 
   const picked = docxFiles[0];
-  await state.store.putBlob(RESUME_SOURCE_KEY, picked);
-
   const paragraphs = await loadParagraphsFromBlob(picked, picked.name);
+  if (!await flushEditorBeforeAction(refs)) return;
+  await state.store.putBlob(RESUME_SOURCE_KEY, picked);
+  await removeDraft(state.store, RESUME_SOURCE_KEY);
+  await bumpSourceVersion(state.store, RESUME_SOURCE_KEY);
+
   state.resumeDocument.fileName = picked.name;
   state.resumeDocument.paragraphs = paragraphs;
   await persistSessionState();
@@ -1464,6 +1559,7 @@ async function setResumeFile(refs, file) {
   warnIfDocumentWillBeTruncated(refs, getContextText(paragraphs), MAX_CONTEXT_CHARS);
   renderUi(refs);
   setMascotMood('excited', 'Resume in — more real experience to draw from!');
+  await renderSelectedPreview(refs);
 }
 
 async function addSampleFiles(refs, files) {
@@ -1571,10 +1667,13 @@ function stripCommentOperations(operations) {
 }
 
 async function clearTailoredApplications(refs) {
+  if (!await flushEditorBeforeAction(refs)) return;
   if (state.jobs.length === 0) {
     setStatusBanner(refs, 'No tailored applications to remove.', 'warn');
     return;
   }
+
+  const removedDraftKeys = state.jobs.flatMap(job => [job?.storage?.resultKey, job?.storage?.resumeResultKey]).filter(Boolean);
 
   for (const job of state.jobs) {
     if (job?.storage?.resultKey) {
@@ -1596,6 +1695,8 @@ async function clearTailoredApplications(refs) {
   setStatusBanner(refs, 'Removed all tailored applications.', 'success');
   renderUi(refs);
   await renderSelectedPreview(refs);
+  // The old editor has been detached/rebound, so it cannot recreate deleted drafts.
+  for (const key of removedDraftKeys) await removeDocumentDraft(key);
 }
 
 async function removeTailoredApplicationById(refs, jobId) {
@@ -1608,6 +1709,7 @@ async function removeTailoredApplicationById(refs, jobId) {
 
   const job = state.jobs.find(item => item.id === normalizedId);
   if (!job) return;
+  if (!await flushEditorBeforeAction(refs)) return;
 
   if (job?.storage?.resultKey) {
     await state.store.remove(job.storage.resultKey);
@@ -1628,6 +1730,7 @@ async function removeTailoredApplicationById(refs, jobId) {
   setStatusBanner(refs, `Removed application: ${formatJobDisplayName(job)}`, 'success');
   renderUi(refs);
   await renderSelectedPreview(refs);
+  for (const key of [job.storage.resultKey, job.storage.resumeResultKey].filter(Boolean)) await removeDocumentDraft(key);
 }
 
 function getAcceptBackupKey(storageKey) {
@@ -1655,7 +1758,8 @@ async function acceptAllPreviewRedlines(refs) {
     return;
   }
 
-  const sourceBlob = await state.store.getBlob(storageKey);
+  if (!await flushEditorBeforeAction(refs)) return;
+  const sourceBlob = await effectiveDocumentBlob(storageKey);
   if (!sourceBlob) {
     setStatusBanner(
       refs,
@@ -1693,6 +1797,7 @@ async function acceptAllPreviewRedlines(refs) {
 
     const updatedBlob = await generateBlobFromZip(zip);
     await state.store.putBlob(storageKey, updatedBlob);
+    await bumpSourceVersion(state.store, storageKey);
 
     if (!selectedJob.hasAcceptBackup) selectedJob.hasAcceptBackup = { coverLetter: false, resume: false };
     selectedJob.hasAcceptBackup[isResumePreview ? 'resume' : 'coverLetter'] = true;
@@ -1734,6 +1839,7 @@ async function undoAcceptAllRedlines(refs) {
   }
 
   const backupKey = getAcceptBackupKey(storageKey);
+  if (!await flushEditorBeforeAction(refs)) return;
   const backupBlob = await state.store.getBlob(backupKey);
   if (!backupBlob) {
     setStatusBanner(refs, 'No tracked-changes backup is available to restore.', 'warn');
@@ -1742,6 +1848,7 @@ async function undoAcceptAllRedlines(refs) {
 
   try {
     await state.store.putBlob(storageKey, backupBlob);
+    await bumpSourceVersion(state.store, storageKey);
     await state.store.remove(backupKey);
 
     if (!selectedJob.hasAcceptBackup) selectedJob.hasAcceptBackup = { coverLetter: false, resume: false };
@@ -1760,12 +1867,15 @@ async function persistJobResult(job, coverLetterZip, resumeZip, details) {
   if (coverLetterZip) {
     const resultBlob = await generateBlobFromZip(coverLetterZip);
     await state.store.putBlob(job.storage.resultKey, resultBlob);
+    await bumpSourceVersion(state.store, job.storage.resultKey);
   }
   if (resumeZip) {
     const resumeBlob = await generateBlobFromZip(resumeZip);
     await state.store.putBlob(job.storage.resumeResultKey, resumeBlob);
+    await bumpSourceVersion(state.store, job.storage.resumeResultKey);
   } else {
     await state.store.remove(job.storage.resumeResultKey);
+    await removeDocumentDraft(job.storage.resumeResultKey);
   }
   await state.store.putJson(job.storage.detailsKey, details);
 }
@@ -1911,7 +2021,7 @@ async function runJob(job, refs, progressContext = {}) {
     return;
   }
 
-  const baseBlob = await state.store.getBlob(BASE_SOURCE_KEY);
+  const baseBlob = await effectiveDocumentBlob(BASE_SOURCE_KEY);
   if (!baseBlob) {
     setStatusBanner(refs, 'Base cover letter is missing from local storage.', 'error');
     resetJobStatusAfterGuardedExit(job, refs);
@@ -1933,12 +2043,12 @@ async function runJob(job, refs, progressContext = {}) {
     setMascotMood('writing', `Tailoring ${formatJobDisplayName(job)}…`, 0);
 
     coverLetterZip = await loadDocxZipFromBlob(baseBlob);
-    const baseParagraphs = Array.isArray(state.baseDocument.paragraphs) && state.baseDocument.paragraphs.length > 0
+    const baseParagraphs = !usesWordcraftPreview && Array.isArray(state.baseDocument.paragraphs) && state.baseDocument.paragraphs.length > 0
       ? state.baseDocument.paragraphs
       : await loadParagraphsFromBlob(baseBlob, state.baseDocument.fileName || 'base.docx');
 
-    const resumeBlob = await state.store.getBlob(RESUME_SOURCE_KEY);
-    const resumeParagraphs = Array.isArray(state.resumeDocument.paragraphs) && state.resumeDocument.paragraphs.length > 0
+    const resumeBlob = await effectiveDocumentBlob(RESUME_SOURCE_KEY);
+    const resumeParagraphs = !usesWordcraftPreview && Array.isArray(state.resumeDocument.paragraphs) && state.resumeDocument.paragraphs.length > 0
       ? state.resumeDocument.paragraphs
       : (resumeBlob ? await loadParagraphsFromBlob(resumeBlob, state.resumeDocument.fileName || 'resume.docx') : []);
     const hasResumeSource = Boolean(resumeBlob && resumeParagraphs.length > 0);
@@ -2111,12 +2221,13 @@ async function runJob(job, refs, progressContext = {}) {
       mode: state.editMode
     });
 
-    const statusLevel = job.status === 'partial' || job.applyWarnings.length > 0 ? 'warn' : 'success';
+    const hasWarnings = getReportableEditWarnings(job).length > 0;
+    const statusLevel = job.status === 'partial' || hasWarnings ? 'warn' : 'success';
     const partialNote = validationErrors.length > 0
       ? ` ${job.failedOperationCount} edit(s) not applied; output may be invalid.`
       : (job.failedOperationCount > 0 ? ` ${job.failedOperationCount} edit(s) could not be applied.` : '');
-    const warningNote = job.applyWarnings.length > 0
-      ? ` ${job.applyWarnings.length} apply warning(s); review job details.`
+    const warningNote = hasWarnings
+      ? ' Review the edit notes and tracked changes before exporting.'
       : '';
     const outcomeMessage = `${JOB_STATUS_LABELS[job.status]}: ${formatJobDisplayName(job)} (${job.coverLetterOperationCount} cover letter + ${job.resumeOperationCount} resume operations).${partialNote}${warningNote}`;
     if (state.isRunning) showToast(refs, outcomeMessage, statusLevel, statusLevel === 'warn' ? 3600 : 2600);
@@ -2145,6 +2256,7 @@ async function runJob(job, refs, progressContext = {}) {
 
 async function runSelectedJob(refs) {
   if (state.isRunning) return;
+  if (!await flushEditorBeforeAction(refs)) return;
   const job = getSelectedJob();
   if (!job) {
     setStatusBanner(refs, 'Select a job first.', 'warn');
@@ -2160,6 +2272,7 @@ async function runSelectedJob(refs) {
     return;
   }
 
+  await setEditorEditingEnabled(refs, false);
   state.isRunning = true;
   renderUi(refs);
   try {
@@ -2169,6 +2282,7 @@ async function runSelectedJob(refs) {
     await runJob(job, refs, { completed: 0, total: 1 });
   } finally {
     state.isRunning = false;
+    await setEditorEditingEnabled(refs, true);
     hideProgressStrip(refs);
     renderUi(refs);
   }
@@ -2176,6 +2290,7 @@ async function runSelectedJob(refs) {
 
 async function runAllJobs(refs) {
   if (state.isRunning) return;
+  if (!await flushEditorBeforeAction(refs)) return;
   if (state.jobs.length === 0) {
     setStatusBanner(refs, 'Add jobs before running batch generation.', 'warn');
     return;
@@ -2189,6 +2304,7 @@ async function runAllJobs(refs) {
     return;
   }
 
+  await setEditorEditingEnabled(refs, false);
   state.isRunning = true;
   renderUi(refs);
   const totalJobs = state.jobs.filter(job => ['queued', 'retry'].includes(String(job.status || '').toLowerCase())).length || state.jobs.length;
@@ -2244,6 +2360,7 @@ async function runAllJobs(refs) {
     setMascotMood('cheer', 'All letters tailored!');
   } finally {
     state.isRunning = false;
+    await setEditorEditingEnabled(refs, true);
     hideProgressStrip(refs);
     renderUi(refs);
     await renderSelectedPreview(refs);
@@ -2251,16 +2368,17 @@ async function runAllJobs(refs) {
 }
 
 async function downloadSelectedJob(refs) {
+  if (!await flushEditorBeforeAction(refs)) return;
   const selectedJob = getSelectedJob();
   if (!selectedJob) return;
 
-  const coverLetterBlob = await state.store.getBlob(selectedJob.storage.resultKey);
+  const coverLetterBlob = await effectiveDocumentBlob(selectedJob.storage.resultKey);
   if (!coverLetterBlob) {
     setStatusBanner(refs, 'No generated file found for selected job yet.', 'warn');
     return;
   }
 
-  const resumeBlob = await state.store.getBlob(selectedJob.storage.resumeResultKey);
+  const resumeBlob = await effectiveDocumentBlob(selectedJob.storage.resumeResultKey);
   if (resumeBlob) {
     const archiveBlob = await createArchiveBlob([
       { name: buildOutputFileName(selectedJob), blob: coverLetterBlob },
@@ -2280,12 +2398,13 @@ async function downloadSelectedJob(refs) {
 }
 
 async function downloadAllJobs(refs) {
+  if (!await flushEditorBeforeAction(refs)) return;
   const fileGroups = await Promise.all(state.jobs.map(async job => {
-    const coverLetterBlob = await state.store.getBlob(job.storage.resultKey);
+    const coverLetterBlob = await effectiveDocumentBlob(job.storage.resultKey);
     if (!coverLetterBlob) return [];
 
     const group = [{ name: buildOutputFileName(job), blob: coverLetterBlob }];
-    const resumeBlob = await state.store.getBlob(job.storage.resumeResultKey);
+    const resumeBlob = await effectiveDocumentBlob(job.storage.resumeResultKey);
     if (resumeBlob) {
       group.push({ name: buildResumeOutputFileName(job), blob: resumeBlob });
     }
@@ -2348,7 +2467,25 @@ function wireDropZone(refs, dropZoneKey, fileInputKey, onFiles) {
 async function init() {
   const refs = getUiRefs();
   initMascot();
-  state.store = await createDocumentStore();
+  state.store = await createDocumentStore({ name: document.documentElement.dataset.documentStore || undefined });
+
+  const versionLink = document.querySelector('[data-version-link]');
+  versionLink?.addEventListener('click', async event => {
+    // Opening a separate tab leaves this editor intact. Same-tab navigation saves first.
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+    event.preventDefault();
+    if (versionLink.getAttribute('aria-busy') === 'true') return;
+    if (state.isRunning) {
+      setStatusBanner(refs, 'Please wait for tailoring to finish before switching versions.', 'info');
+      return;
+    }
+    versionLink.setAttribute('aria-busy', 'true');
+    try {
+      if (await flushEditorBeforeAction(refs)) window.location.assign(versionLink.href);
+    } finally {
+      versionLink.removeAttribute('aria-busy');
+    }
+  });
 
   console.info(`[Application Station] App version ${APP_VERSION}`);
 
@@ -2564,10 +2701,13 @@ async function init() {
     await addSampleFiles(refs, files);
   });
 
-  refs.addJobBtn.addEventListener('click', () => addSingleJobFromInputs(refs));
+  refs.addJobBtn.addEventListener('click', async () => {
+    if (await flushEditorBeforeAction(refs)) await addSingleJobFromInputs(refs);
+  });
   refs.clearSamplesBtn.addEventListener('click', () => clearSampleLetters(refs));
   refs.clearApplicationsBtn.addEventListener('click', () => clearTailoredApplications(refs));
   refs.previewCoverLetterBtn.addEventListener('click', async () => {
+    if (!await flushEditorBeforeAction(refs, { allowCleanExternal: true })) return;
     state.previewType = 'coverLetter';
     await persistSessionState();
     renderUi(refs);
@@ -2575,6 +2715,7 @@ async function init() {
   });
   refs.previewResumeBtn.addEventListener('click', async () => {
     if (refs.previewResumeBtn.disabled) return;
+    if (!await flushEditorBeforeAction(refs, { allowCleanExternal: true })) return;
     state.previewType = 'resume';
     await persistSessionState();
     renderUi(refs);
@@ -2601,6 +2742,7 @@ async function init() {
         await removeTailoredApplicationById(refs, actionJobId);
       }
       if (action === 'retry' && actionJobId) {
+        if (!await flushEditorBeforeAction(refs)) return;
         state.selectedJobId = actionJobId;
         await persistSessionState();
         renderUi(refs);
@@ -2615,6 +2757,7 @@ async function init() {
     const jobId = card.getAttribute('data-job-id');
     if (!jobId) return;
 
+    if (!await flushEditorBeforeAction(refs, { allowCleanExternal: true })) return;
     state.selectedJobId = jobId;
     await persistSessionState();
     renderUi(refs);

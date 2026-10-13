@@ -1,0 +1,5 @@
+{
+  "commit": "7dfa6b0ee2aeeafec004c51fdd2ab9a697da3cc4",
+  "patch": "compact-startup.patch",
+  "embed": true
+}

@@ -44,6 +44,14 @@ python -m http.server 8002
 
 Then open `http://localhost:8002`.
 
+## V2 secondary trial
+
+The standard experience stays at `index.html`. The optional editable WordCraft beta lives at `wordcraft-demo.html`; notices in both headers link between them. Returning from beta saves the active editor first. Both versions use the same browser session, while manual WordCraft edits remain separate drafts used by beta exports.
+
+Deploy the checked-in `vendor/wordcraft/` bundle alongside the app. It includes the patched editor and its approximately 39 MB WebAssembly file; the standard page does not load that editor. The patch and native build script are in `vendor/wordcraft-patches/` and `scripts/build-wordcraft.ps1`. Do not replace the patched bundle with the stock release: it lacks the draft-saving bridge.
+
+Before publishing, verify both switch links on the hosted subpath and confirm the editor's JavaScript and WebAssembly assets load successfully. Browser integration instructions are in `tests/wordcraft-demo-integration.md`.
+
 ## Notes
 
 - Your session persists in the browser (files/results in IndexedDB, lightweight preferences in localStorage).

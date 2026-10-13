@@ -5,6 +5,14 @@ function cloneJsonValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function cloneDraftValue(value) {
+  if (value == null || typeof value !== 'object') return value;
+  if (typeof globalThis.structuredClone === 'function') {
+    return globalThis.structuredClone(value);
+  }
+  return { ...value };
+}
+
 const DB_NAME = 'cover-letter-ai-store';
 const DB_VERSION = 1;
 const BLOBS_STORE = 'blobs';
@@ -15,11 +23,20 @@ function createMemoryStore() {
   const jsonMap = new Map();
 
   return {
+    isPersistent: false,
+    close() {},
     async putBlob(key, blob) {
       blobMap.set(String(key), blob);
     },
     async getBlob(key) {
       return blobMap.get(String(key)) || null;
+    },
+    async putDraft(key, record) {
+      blobMap.set(String(key), cloneDraftValue(record));
+    },
+    async getDraft(key) {
+      const record = blobMap.get(String(key));
+      return record == null ? null : cloneDraftValue(record);
     },
     async putJson(key, value) {
       jsonMap.set(String(key), cloneJsonValue(value));
@@ -51,13 +68,13 @@ function transactionAsPromise(tx) {
   });
 }
 
-async function openIndexedDb() {
+async function openIndexedDb(name = DB_NAME) {
   const indexedDb = globalThis.indexedDB;
   if (!indexedDb) {
     throw new Error('IndexedDB is unavailable');
   }
 
-  const openRequest = indexedDb.open(DB_NAME, DB_VERSION);
+  const openRequest = indexedDb.open(name, DB_VERSION);
   openRequest.onupgradeneeded = () => {
     const db = openRequest.result;
     if (!db.objectStoreNames.contains(BLOBS_STORE)) {
@@ -90,12 +107,21 @@ function runRemoveRequest(db, key) {
 
 function createIndexedDbStore(db) {
   return {
+    isPersistent: true,
+    close() { db.close(); },
     async putBlob(key, blob) {
       await runStoreRequest(db, BLOBS_STORE, 'readwrite', store => store.put(blob, String(key)));
     },
     async getBlob(key) {
       const result = await runStoreRequest(db, BLOBS_STORE, 'readonly', store => store.get(String(key)));
       return result ?? null;
+    },
+    async putDraft(key, record) {
+      await runStoreRequest(db, BLOBS_STORE, 'readwrite', store => store.put(cloneDraftValue(record), String(key)));
+    },
+    async getDraft(key) {
+      const result = await runStoreRequest(db, BLOBS_STORE, 'readonly', store => store.get(String(key)));
+      return result == null ? null : cloneDraftValue(result);
     },
     async putJson(key, value) {
       await runStoreRequest(db, JSON_STORE, 'readwrite', store => store.put(cloneJsonValue(value), String(key)));
@@ -110,13 +136,13 @@ function createIndexedDbStore(db) {
   };
 }
 
-export async function createDocumentStore() {
+export async function createDocumentStore({ name = DB_NAME } = {}) {
   if (typeof indexedDB === 'undefined') {
     return createMemoryStore();
   }
 
   try {
-    const db = await openIndexedDb();
+    const db = await openIndexedDb(name);
     return createIndexedDbStore(db);
   } catch (error) {
     console.warn('[CoverLetter AI] Falling back to in-memory document store:', error?.message || String(error));
