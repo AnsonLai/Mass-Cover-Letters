@@ -28,6 +28,7 @@ export const GEMINI_MODEL_OPTIONS = [
   { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (More Awareness)' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Better Writing Style)' },
   { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview (Experimental)' },
+  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (Very Expensive)' },
   { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite (Cheapest)' }
 ];
 

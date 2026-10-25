@@ -100,6 +100,7 @@ test('buildUserSettingsPromptBlock includes voice and extra guidance', () => {
 
 test('normalizeGeminiModel keeps supported values and falls back for unknown values', () => {
   assert.equal(normalizeGeminiModel('gemini-2.5-pro'), 'gemini-2.5-pro');
+  assert.equal(normalizeGeminiModel('gemini-4-argon'), 'gemini-4-argon');
   assert.equal(normalizeGeminiModel('unknown'), DEFAULT_GEMINI_MODEL);
 });
 
