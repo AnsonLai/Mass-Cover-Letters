@@ -697,33 +697,37 @@ function applySidebarWidth(refs, width, options = {}) {
 }
 
 function wireSidebarResizer(refs) {
+  const handle = refs.sidebarResizeHandle;
   const getCurrentSidebarWidth = () => Math.round(refs.sidebar.getBoundingClientRect().width);
+  let drag = null;
 
-  refs.sidebarResizeHandle.addEventListener('pointerdown', event => {
-    if (isCompactLayout()) return;
+  const finishDrag = (persist = false) => {
+    if (!drag) return;
+    const { pointerId } = drag;
+    drag = null;
+    document.body.classList.remove('is-resizing');
+    if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+    if (persist) applySidebarWidth(refs, getCurrentSidebarWidth(), { persist: true });
+  };
+
+  handle.addEventListener('pointerdown', event => {
+    if (drag || event.button !== 0 || isCompactLayout()) return;
     event.preventDefault();
-
-    const startX = event.clientX;
-    const startWidth = getCurrentSidebarWidth();
+    handle.setPointerCapture(event.pointerId);
+    drag = { pointerId: event.pointerId, startX: event.clientX, startWidth: getCurrentSidebarWidth() };
     document.body.classList.add('is-resizing');
-
-    const onMove = moveEvent => {
-      const delta = moveEvent.clientX - startX;
-      applySidebarWidth(refs, startWidth + delta);
-    };
-
-    const onUp = () => {
-      document.body.classList.remove('is-resizing');
-      globalThis.removeEventListener('pointermove', onMove);
-      globalThis.removeEventListener('pointerup', onUp);
-      applySidebarWidth(refs, getCurrentSidebarWidth(), { persist: true });
-    };
-
-    globalThis.addEventListener('pointermove', onMove);
-    globalThis.addEventListener('pointerup', onUp, { once: true });
   });
+  handle.addEventListener('pointermove', event => {
+    if (drag?.pointerId !== event.pointerId) return;
+    applySidebarWidth(refs, drag.startWidth + event.clientX - drag.startX);
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    handle.addEventListener(type, event => {
+      if (drag?.pointerId === event.pointerId) finishDrag(type === 'pointerup');
+    });
+  }
 
-  refs.sidebarResizeHandle.addEventListener('keydown', event => {
+  handle.addEventListener('keydown', event => {
     if (isCompactLayout()) return;
 
     const current = getCurrentSidebarWidth();
@@ -754,6 +758,7 @@ function wireSidebarResizer(refs) {
 
   globalThis.addEventListener('resize', () => {
     if (isCompactLayout()) {
+      finishDrag();
       refs.workspace.style.removeProperty('--sidebar-width');
       return;
     }
@@ -879,7 +884,7 @@ function startTour(refs) {
   closeSettingsModal(refs);
   closeWelcomeModal(refs);
   state.onboarding.expanded = false;
-  refreshOnboarding(refs);
+  state.onboarding.forcedOpen = false;
   startGuidedTour({
     refs,
     onDone: result => {
@@ -887,6 +892,7 @@ function startTour(refs) {
       refreshOnboarding(refs);
     }
   });
+  refreshOnboarding(refs);
 }
 
 function getOnboardingProgress(refs) {
@@ -946,25 +952,24 @@ function refreshOnboarding(refs) {
   refs.onboardingProgressText.textContent = `Setup ${progress.completeCount}/${progress.totalCount}`;
   refs.onboardingPillBtn.setAttribute('aria-expanded', state.onboarding.expanded ? 'true' : 'false');
 
-  if (progress.allComplete && !state.onboarding.completedToastShown && !state.onboarding.dismissed) {
+  if (progress.allComplete && !state.onboarding.completedToastShown && !state.onboarding.dismissed && !state.onboarding.forcedOpen) {
     state.onboarding.completedToastShown = true;
     state.onboarding.dismissed = true;
     setStoredOnboardingDismissed(true);
     showToast(refs, "Setup complete — you're ready to tailor at scale 🎉", 'success', 3600);
   }
 
-  const shouldShow = !state.onboarding.dismissed && !progress.allComplete && !isTourActive();
+  const shouldShow = !isTourActive() && (
+    state.onboarding.forcedOpen || (!state.onboarding.dismissed && !progress.allComplete)
+  );
   refs.onboardingModal.hidden = !shouldShow;
   refs.onboardingModal.classList.toggle('is-expanded', Boolean(shouldShow && state.onboarding.expanded));
   refs.onboardingModal.classList.toggle('is-collapsed', Boolean(shouldShow && !state.onboarding.expanded));
 }
 
-function openOnboardingModal(refs, force = false) {
-  state.onboarding.forcedOpen = Boolean(force);
-  state.onboarding.dismissed = false;
-  if (force) setStoredOnboardingDismissed(false);
+function openOnboardingModal(refs) {
+  state.onboarding.forcedOpen = true;
   state.onboarding.expanded = true;
-  refs.onboardingModal.hidden = false;
   refreshOnboarding(refs);
 }
 
@@ -2426,6 +2431,15 @@ async function downloadAllJobs(refs) {
 function wireDropZone(refs, dropZoneKey, fileInputKey, onFiles) {
   const dropZone = refs[dropZoneKey];
   const fileInput = refs[fileInputKey];
+  const importFiles = async files => {
+    if (!files.length) return;
+    try {
+      await onFiles(files);
+    } catch (error) {
+      console.warn('[Document upload failed]', error);
+      setStatusBanner(refs, `Couldn’t load the selected document(s): ${error?.message || String(error)}`, 'error');
+    }
+  };
 
   const preventDefaults = event => {
     event.preventDefault();
@@ -2446,21 +2460,16 @@ function wireDropZone(refs, dropZoneKey, fileInputKey, onFiles) {
     });
   }
 
-  dropZone.addEventListener('drop', async event => {
-    const files = event.dataTransfer?.files;
-    if (files?.length) {
-      await onFiles(files);
-    }
+  dropZone.addEventListener('drop', event => {
+    void importFiles(Array.from(event.dataTransfer?.files || []));
   });
 
   dropZone.addEventListener('click', () => fileInput.click());
 
-  fileInput.addEventListener('change', async event => {
-    const files = event.target.files;
-    if (files?.length) {
-      await onFiles(files);
-    }
+  fileInput.addEventListener('change', () => {
+    const files = Array.from(fileInput.files || []);
     fileInput.value = '';
+    void importFiles(files);
   });
 }
 
@@ -2528,7 +2537,7 @@ async function init() {
   });
   refs.setupChecklistBtn.addEventListener('click', () => {
     closeSettingsModal(refs);
-    openOnboardingModal(refs, true);
+    openOnboardingModal(refs);
   });
   refs.clearAllDataBtn.addEventListener('click', () => {
     clearAllData();
@@ -2615,14 +2624,17 @@ async function init() {
   });
 
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {
-      closeAllActionMenus(refs);
-      closeSettingsModal(refs);
+    if (event.key === 'Escape' && !event.defaultPrevented) {
       if (!refs.welcomeModal.hidden) {
         completeWelcome(refs);
         refreshOnboarding(refs);
+      } else if (!refs.settingsModal.hidden) {
+        closeSettingsModal(refs);
+      } else if (!refs.runMenu.hidden || !refs.downloadMenu.hidden) {
+        closeAllActionMenus(refs);
+      } else if (!refs.onboardingModal.hidden && state.onboarding.expanded) {
+        closeOnboardingModal(refs, { dismiss: true });
       }
-      closeOnboardingModal(refs, { dismiss: true });
     }
     if (!refs.welcomeModal.hidden && event.key === 'Tab') {
       const focusables = getFocusableChildren(refs.welcomeModal);

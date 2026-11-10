@@ -18,6 +18,7 @@ import {
   diceSimilarity,
   normalizeForMatch,
   ingestDocxFile,
+  createArchiveBlob,
   loadDocxFromBlob,
   generateBlobFromDoc,
   applyOperationsInBatches,
@@ -28,8 +29,7 @@ import * as pinnedDocxRedline from '../vendor/docx-redline/0.9.0/docx-redline.bu
 
 const require = createRequire(import.meta.url);
 
-async function createTestDocxBytes(paragraphs = ['First paragraph.', 'Second paragraph for testing.'], options = {}) {
-  let JSZipCtor = null;
+function getTestJsZip() {
   const candidatePaths = [
     '../../Docx Redline JS/node_modules/jszip',
     '../Docx Redline JS/node_modules/jszip',
@@ -38,15 +38,48 @@ async function createTestDocxBytes(paragraphs = ['First paragraph.', 'Second par
 
   for (const p of candidatePaths) {
     try {
-      JSZipCtor = require(p);
-      if (JSZipCtor) break;
+      return require(p);
     } catch { }
   }
 
-  if (!JSZipCtor) {
-    throw new Error('JSZip required for generating test DOCX fixture');
-  }
+  throw new Error('JSZip required for testing DOCX archives');
+}
 
+test('archive preserves colliding documents and reserves existing suffixed filenames', async t => {
+  const JSZip = getTestJsZip();
+  const previousJsZip = globalThis.JSZip;
+  globalThis.JSZip = JSZip;
+  t.after(() => {
+    if (previousJsZip === undefined) delete globalThis.JSZip;
+    else globalThis.JSZip = previousJsZip;
+  });
+
+  const inputs = [
+    ['Letter.docx', 'first'],
+    ['Letter.docx', 'second'],
+    ['Letter (2).docx', 'already named'],
+    ['letter.docx', 'case collision'],
+    ['Resume.docx', 'unique']
+  ];
+  const blob = await createArchiveBlob(inputs.map(([name, content]) => ({
+    name,
+    blob: new TextEncoder().encode(content)
+  })));
+  const archive = await JSZip.loadAsync(await blob.arrayBuffer());
+  const contents = await Promise.all(Object.values(archive.files).map(async file => [
+    file.name, await file.async('string')
+  ]));
+  assert.deepEqual(contents, [
+    ['Letter.docx', 'first'],
+    ['Letter (3).docx', 'second'],
+    ['Letter (2).docx', 'already named'],
+    ['letter (4).docx', 'case collision'],
+    ['Resume.docx', 'unique']
+  ]);
+});
+
+async function createTestDocxBytes(paragraphs = ['First paragraph.', 'Second paragraph for testing.'], options = {}) {
+  const JSZipCtor = getTestJsZip();
   const zip = new JSZipCtor();
 
   const contentTypesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +

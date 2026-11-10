@@ -727,9 +727,24 @@ export async function createArchiveBlob(files) {
   const JSZipCtor = await getJsZipCtor();
   const archive = new JSZipCtor();
 
-  for (const file of Array.isArray(files) ? files : []) {
-    if (!file?.name || !file?.blob) continue;
-    archive.file(String(file.name), file.blob);
+  const entries = (Array.isArray(files) ? files : []).filter(file => file?.name && file?.blob);
+  const originalNames = new Set(entries.map(file => String(file.name).toLowerCase()));
+  const usedNames = new Set();
+  for (const file of entries) {
+    const original = String(file.name);
+    let name = original;
+    if (usedNames.has(name.toLowerCase())) {
+      const extensionIndex = original.lastIndexOf('.');
+      const hasExtension = extensionIndex > original.lastIndexOf('/') + 1;
+      const stem = hasExtension ? original.slice(0, extensionIndex) : original;
+      const extension = hasExtension ? original.slice(extensionIndex) : '';
+      let number = 2;
+      do {
+        name = `${stem} (${number++})${extension}`;
+      } while (usedNames.has(name.toLowerCase()) || originalNames.has(name.toLowerCase()));
+    }
+    usedNames.add(name.toLowerCase());
+    archive.file(name, file.blob);
   }
 
   return archive.generateAsync({ type: 'blob' });

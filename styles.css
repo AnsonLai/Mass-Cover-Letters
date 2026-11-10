@@ -1561,6 +1561,7 @@ button:disabled {
 .sidebar-resize-handle {
   position: relative;
   cursor: col-resize;
+  touch-action: none;
   background: linear-gradient(180deg, #eef3f1, #dbe5e0);
   border-left: 1px solid #d6e0db;
   border-right: 1px solid #d6e0db;
