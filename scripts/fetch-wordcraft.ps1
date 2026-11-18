@@ -9,8 +9,8 @@ Set-StrictMode -Version Latest
 # This script intentionally uses the released web bundle.  Do not replace the tag
 # without also updating the plan and re-evaluating WordCraft against our documents.
 $Repository = 'storytold/wordcraft'
-$ReleaseTag = 'v0.6.1'
-$AssetName = 'wordcraft-web-0.6.1.zip'
+$ReleaseTag = 'v0.18.1'
+$AssetName = 'wordcraft-web-0.18.1.zip'
 
 $workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $vendorRoot = Join-Path $workspaceRoot 'vendor'

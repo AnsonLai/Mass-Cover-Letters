@@ -7,9 +7,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# This source revision is the target recorded by GitHub's v0.6.1 release metadata.
+# This source revision is the target recorded by GitHub's v0.18.1 release metadata.
 $RepositoryUrl = 'https://github.com/storytold/wordcraft.git'
-$Commit = '7dfa6b0ee2aeeafec004c51fdd2ab9a697da3cc4'
+$Commit = '079f478bd85df7bcc567e3bafa7d7219096f9c3c'
 $PatchName = 'compact-startup.patch'
 $TrunkVersion = '0.21.14'
 # The workspace minimum is 1.90, but its release lockfile resolves packages

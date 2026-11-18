@@ -1,5 +1,5 @@
 diff --git a/apps/wordcraft-web/src/web.rs b/apps/wordcraft-web/src/web.rs
-index 30ab58e..44d4525 100644
+index fb808de..3b24d82 100644
 --- a/apps/wordcraft-web/src/web.rs
 +++ b/apps/wordcraft-web/src/web.rs
 @@ -2,8 +2,10 @@
@@ -12,50 +12,74 @@ index 30ab58e..44d4525 100644
 +use serde_json::json;
  use wasm_bindgen::JsCast as _;
  use wordcraft_engine::Session;
- use wordcraft_ui_egui::{Inbox, Services, WordApp};
-@@ -26,6 +28,7 @@ pub fn start() {
-             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
-             return;
-         };
+ use wordcraft_ui_egui::async_saves::{AsyncSaves, SaveOutcome};
+@@ -34,10 +36,12 @@ pub fn start() {
+         // in instead: it runs WordCraft in its own document and talks over DOM `CustomEvent`s
+         // on the canvas (`host`). The host guards leaving the page, so this one doesn't.
+         let bridge = crate::host::Bridge::detect(&canvas);
 +        let embed = query().contains("embed");
+         let app_bridge = bridge.clone();
          let dirty = Rc::new(Cell::new(false));
-         let saves = Rc::new(PickerSaves::default());
-         if let Err(e) = guard_unload(dirty.clone(), saves.clone()) {
-@@ -48,6 +51,7 @@ pub fn start() {
-                     // Fonts the user added on an earlier visit (#582); the app notices them arrive.
+         let saves = AsyncSaves::default();
+         if bridge.is_none()
++            && !embed
+             && let Err(e) = guard_unload(dirty.clone(), saves.clone())
+         {
+             log::error!("no unsaved-changes guard: {e}");
+@@ -60,6 +64,7 @@ pub fn start() {
                      font_store::load_all(cc.egui_ctx.clone());
                      let inbox: Inbox = Inbox::default();
-+                    let bridge: BridgeQueue = Default::default();
-                     if let Err(e) = listen_for_pasted_pictures(inbox.clone(), cc.egui_ctx.clone()) {
+                     let pasted: Inbox = Inbox::default();
++                    let bridge_queue: BridgeQueue = Default::default();
+                     if let Err(e) = listen_for_pasted_pictures(pasted.clone(), cc.egui_ctx.clone()) {
                          log::error!("pasting pictures is unavailable: {e}");
                      }
-@@ -61,10 +65,20 @@ pub fn start() {
-                     let mut app = WordApp::new(session, services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone()));
+@@ -83,16 +88,18 @@ pub fn start() {
                      app.autosave = false;
+                     // Preferences from an earlier visit (#2132), as the desktop app reads `ui.json`.
+                     let stored = stored_prefs();
+-                    crate::prefs::restore(&mut app, stored.as_deref());
++                    if !embed {
++                        crate::prefs::restore(&mut app, stored.as_deref());
++                    }
+                     // A region chosen in File › Options replaces the browser's for the first blank
+                     // document too (#838).
+-                    if !sample && app.session.prefs.region.is_some() {
++                    if !sample && !embed && app.session.prefs.region.is_some() {
+                         let doc = app.session.blank_document();
+                         app.session.set_document(doc);
+                     }
+                     let mut prefs = crate::prefs::PrefsSync::new(stored);
                      // No document to show: start on File › Home, as the desktop app does (#766).
 -                    if !sample {
 +                    if !sample && !embed {
                          app.start_screen();
                      }
--                    Ok(Box::new(WebShell { app, inbox, saves }))
+                     // The host's name for the user signs this visit's work, but isn't stored as the
+@@ -104,7 +111,17 @@ pub fn start() {
+                         crate::host::Bridge::set_author(&mut app, &author);
+                         prefs.keep_own_author(&app.session.author, &own);
+                     }
+-                    Ok(Box::new(WebShell { app, inbox, messages, prefs }))
 +                    if embed {
 +                        app.ui.backstage = false;
 +                        app.ui.ribbon_collapsed = true;
 +                        app.ui.show_discord = false;
 +                        app.session.initials = "QU".into();
 +                        app.session.view.ruler = false;
-+                        if let Err(e) = install_bridge(bridge.clone(), cc.egui_ctx.clone()) {
++                        if let Err(e) = install_bridge(bridge_queue.clone(), cc.egui_ctx.clone()) {
 +                            log::error!("couldn't install export bridge: {e}");
 +                        }
 +                    }
-+                    Ok(Box::new(WebShell { app, inbox, saves, bridge, snapshots: BTreeMap::new() }))
++                    Ok(Box::new(WebShell { app, inbox, messages, prefs, embed, bridge: bridge_queue, snapshots: BTreeMap::new() }))
                  }),
              )
              .await;
-@@ -87,6 +101,89 @@ struct WebShell {
-     app: WordApp,
+@@ -139,6 +156,169 @@ struct WebShell {
      inbox: Inbox,
-     saves: Rc<PickerSaves>,
+     messages: Rc<RefCell<Vec<String>>>,
+     prefs: crate::prefs::PrefsSync,
++    embed: bool,
 +    bridge: BridgeQueue,
 +    snapshots: BTreeMap<u64, u64>,
 +}
@@ -67,7 +91,7 @@ index 30ab58e..44d4525 100644
 +    Load { name: String, bytes: Vec<u8>, resolve: js_sys::Function, reject: js_sys::Function },
 +    Snapshot { name: String, resolve: js_sys::Function, reject: js_sys::Function },
 +    State { resolve: js_sys::Function, reject: js_sys::Function },
-+    Acknowledge { revision: u64, resolve: js_sys::Function, reject: js_sys::Function },
++    Acknowledge { revision: u64, resolve: js_sys::Function, _reject: js_sys::Function },
 +}
 +
 +fn install_bridge(bridge: BridgeQueue, ctx: egui::Context) -> Result<(), String> {
@@ -77,7 +101,6 @@ index 30ab58e..44d4525 100644
 +    let export = wasm_bindgen::closure::Closure::<dyn FnMut(String) -> js_sys::Promise>::new(move |name: String| {
 +        let bridge = export_bridge.clone();
 +        let ctx = export_ctx.clone();
-+        let name = name.clone();
 +        js_sys::Promise::new(&mut move |resolve, reject| {
 +            bridge.borrow_mut().push(BridgeRequest::Export { name: name.clone(), resolve, reject });
 +            ctx.request_repaint();
@@ -131,7 +154,7 @@ index 30ab58e..44d4525 100644
 +        let bridge = acknowledge_bridge.clone();
 +        let ctx = acknowledge_ctx.clone();
 +        js_sys::Promise::new(&mut move |resolve, reject| {
-+            bridge.borrow_mut().push(BridgeRequest::Acknowledge { revision: revision as u64, resolve, reject });
++            bridge.borrow_mut().push(BridgeRequest::Acknowledge { revision: revision as u64, resolve, _reject: reject });
 +            ctx.request_repaint();
 +        })
 +    });
@@ -139,14 +162,9 @@ index 30ab58e..44d4525 100644
 +        .map_err(|e| format!("{e:?}"))?;
 +    acknowledge.forget();
 +    Ok(())
- }
- 
- /// Saves the browser's save picker finishes after `download` has returned (#728). The app marks
-@@ -118,6 +215,84 @@ impl WebShell {
-             }
-         }
-     }
++}
 +
++impl WebShell {
 +    fn bridge_state(&self) -> Result<wasm_bindgen::JsValue, String> {
 +        let state = js_sys::Object::new();
 +        js_sys::Reflect::set(&state, &wasm_bindgen::JsValue::from_str("revision"), &wasm_bindgen::JsValue::from_f64(self.app.session.rev() as f64))
@@ -213,7 +231,7 @@ index 30ab58e..44d4525 100644
 +                    Ok(state) => Self::resolve(&resolve, &state),
 +                    Err(error) => Self::reject(&reject, error),
 +                },
-+                BridgeRequest::Acknowledge { revision, resolve, reject: _ } => {
++                BridgeRequest::Acknowledge { revision, resolve, _reject: _ } => {
 +                    let current_document = self.app.session.document_id();
 +                    let acknowledged = self.app.session.rev() == revision && self.snapshots.get(&revision).is_some_and(|id| *id == current_document);
 +                    if acknowledged {
@@ -226,159 +244,191 @@ index 30ab58e..44d4525 100644
 +    }
  }
  
- impl eframe::App for WebShell {
-@@ -139,6 +314,7 @@ impl eframe::App for WebShell {
+ fn local_storage() -> Option<web_sys::Storage> {
+@@ -160,8 +340,11 @@ impl eframe::App for WebShell {
+             self.app.status(msg);
          }
-         self.settle_picker_saves();
          self.app.logic(ctx);
 +        self.fulfill_bridge();
-     }
- 
-     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
-index 88c7404..4b8c769 100644
---- a/crates/ui-egui/src/lib.rs
-+++ b/crates/ui-egui/src/lib.rs
-@@ -991,7 +991,7 @@ impl WordApp {
-                 json!({"pending": "contextMenu"})
+         // Store changed preferences straight away: a reload or closed tab runs no exit code (#2132).
+-        if let Some(json) = self.prefs.changed(&self.app) {
++        if !self.embed
++            && let Some(json) = self.prefs.changed(&self.app)
++        {
+             match local_storage() {
+                 Some(store) => {
+                     if let Err(e) = store.set_item(crate::prefs::KEY, &json) {
+diff --git a/crates/ui-egui/src/app/commands.rs b/crates/ui-egui/src/app/commands.rs
+index 568c7ef..622485d 100644
+--- a/crates/ui-egui/src/app/commands.rs
++++ b/crates/ui-egui/src/app/commands.rs
+@@ -578,7 +578,7 @@ impl WordApp {
              }
+             "ui.paneDock" => return Some(panes::dock_command(self, p)),
              "ui.collapseRibbon" => {
 -                self.ui.ribbon_collapsed = !self.ui.ribbon_collapsed;
 +                self.ui.ribbon_collapsed = p.get("value").and_then(Value::as_bool).unwrap_or(!self.ui.ribbon_collapsed);
                  json!({"collapsed": self.ui.ribbon_collapsed})
              }
-             "ui.keytips" => {
+             "ui.focusRibbon" => {
 diff --git a/crates/ui-egui/src/ribbon.rs b/crates/ui-egui/src/ribbon.rs
-index f558bd7..7dd4a99 100644
+index ebdcd26..6031e80 100644
 --- a/crates/ui-egui/src/ribbon.rs
 +++ b/crates/ui-egui/src/ribbon.rs
-@@ -216,15 +216,46 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
-                         let u = Rect::from_center_size(pos2(r.center().x, r.max.y - 2.0), vec2(w - 16.0, 3.0));
-                         ui.painter().rect_filled(u, 2.0, t.accent);
-                     }
-+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), shown));
-                     if resp.clicked() {
-+                        let id = egui::Id::new("ribbon_expanded_on_click");
-+                        let was_collapsed = app.ui.ribbon_collapsed;
-                         let _ = app.run("ui.tab", json!({"tab": tab}));
-+                        if was_collapsed && tab != "File" {
-+                            let _ = app.run("ui.collapseRibbon", json!({"value": false}));
-+                            let now = ui.ctx().input(|i| i.time);
-+                            ui.ctx().data_mut(|d| d.insert_temp(id, (tab.to_string(), now)));
-+                        } else if !was_collapsed && !resp.double_clicked() {
-+                            ui.ctx().data_mut(|d| d.remove::<(String, f64)>(id));
-+                        }
-                     }
-                     if resp.double_clicked() && tab != "File" {
--                        let _ = app.run("ui.collapseRibbon", json!({}));
-+                        let id = egui::Id::new("ribbon_expanded_on_click");
-+                        let now = ui.ctx().input(|i| i.time);
-+                        let just_expanded = ui.ctx().data_mut(|d| {
-+                            let prev: Option<(String, f64)> = d.get_temp(id);
-+                            if prev.as_ref().is_some_and(|(t_tab, t)| t_tab == tab && now - t < 0.6) {
-+                                d.remove::<(String, f64)>(id);
-+                                true
-+                            } else {
-+                                false
-+                            }
-+                        });
-+                        if !just_expanded {
+@@ -173,8 +173,8 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
+                         let share_button = if level < 2 { share_full } else { 30.0 };
+                         let editing = crate::widgets::icon_text_button_width(ui, editing_label, regular(12.0), true, labels);
+                         let comment = crate::widgets::icon_text_button_width(ui, comments, regular(12.0), false, labels);
+-                        // The gaps (6 + 4 + 8) and the strip's margin.
+-                        spaced(share_button) + spaced(editing) + spaced(comment) + 18.0 + 12.0
++                        // The gaps (6 + 4 + 8), the ribbon toggle button (22 + 4), and the strip's margin.
++                        spaced(share_button) + spaced(editing) + spaced(comment) + 26.0 + 18.0 + 12.0
+                     };
+                     let button_levels = [button_widths(0), button_widths(1), button_widths(2)];
+                     let labels: Vec<&str> = tabs.iter().map(|(tab, custom)| if *custom { tab.as_str() } else { tl!(tab) }).collect();
+@@ -190,6 +190,14 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
+                         .collect();
+                     let plan = plan_strip(&specs, button_levels, ui.available_width(), MORE_TABS_W + 2.0);
+                     ui.with_layout(crate::rtl::far_side(ui, egui::Align::Center), |ui| {
++                        let toggle_icon = if app.ui.ribbon_collapsed { "chevronDown" } else { "chevronUp" };
++                        let toggle_tip = if app.ui.ribbon_collapsed { tl!("Show Ribbon") } else { tl!("Collapse the Ribbon") };
++                        let toggle = crate::widgets::icon_button(ui, toggle_icon, toggle_tip);
++                        toggle.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), toggle_tip));
++                        if toggle.clicked() {
 +                            let _ = app.run("ui.collapseRibbon", json!({}));
 +                        }
-                     }
-                     resp.context_menu(|ui| crate::widgets::customize_menu_items(ui, app));
-                 }
-                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-+                    let toggle_icon = if app.ui.ribbon_collapsed { "chevronDown" } else { "chevronUp" };
-+                    let toggle_tip = if app.ui.ribbon_collapsed { tl!("Show Ribbon") } else { tl!("Collapse the Ribbon") };
-+                    let toggle = crate::widgets::icon_button(ui, toggle_icon, toggle_tip);
-+                    toggle.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), toggle_tip));
-+                    if toggle.clicked() {
-+                        let _ = app.run("ui.collapseRibbon", json!({}));
-+                    }
-+                    ui.add_space(4.0);
-                     // Share, Editing mode, Comments.
-                     let share = tl!("Share");
-                     let share_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(share.to_string(), medium(12.0), t.text).size().x);
-@@ -2565,4 +2596,68 @@ mod tests {
-         assert_eq!(resolve_tab("Table Design", &["Home"]), "Home");
-         assert_eq!(resolve_tab("Home", &["Home"]), "Home");
-     }
-+
-+    #[test]
-+    fn collapsed_ribbon_opens_from_toggle_button_and_tab_click() {
-+        use egui_kittest::kittest::Queryable;
-+        let mut app = WordApp::new(Session::new(wordcraft_engine::sample::sample_document()), crate::Services::default());
-+        app.ui.ribbon_collapsed = true;
-+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
-+            |ui, app: &mut WordApp| {
-+                let ctx = ui.ctx().clone();
-+                app.logic(&ctx);
-+                app.ui(ui);
-+            },
-+            app,
-+        );
-+        let double_click_at = |h: &mut egui_kittest::Harness<'_, WordApp>, pos: egui::Pos2| {
-+            let click = |h: &mut egui_kittest::Harness<'_, WordApp>, pressed: bool| {
-+                h.event(egui::Event::PointerButton {
-+                    pos,
-+                    button: egui::PointerButton::Primary,
-+                    pressed,
-+                    modifiers: egui::Modifiers::NONE,
-+                });
-+            };
-+            h.event(egui::Event::PointerMoved(pos));
-+            h.step();
-+            click(h, true);
-+            h.step();
-+            click(h, false);
-+            h.step();
-+            click(h, true);
-+            h.step();
-+            click(h, false);
-+            h.run_steps(2);
-+        };
-+        h.run_steps(2);
-+        assert!(h.state().ui.ribbon_collapsed);
-+        h.get_by_label("Show Ribbon").click();
-+        h.run_steps(2);
-+        assert!(!h.state().ui.ribbon_collapsed, "clicking Show Ribbon expands the toolbar");
-+
-+        h.get_by_label("Collapse the Ribbon").click();
-+        h.run_steps(2);
-+        assert!(h.state().ui.ribbon_collapsed, "clicking Collapse the Ribbon collapses it again");
-+
-+        h.get_by_label("Insert").click();
-+        h.run_steps(2);
-+        assert!(!h.state().ui.ribbon_collapsed, "single-clicking a tab when collapsed opens the ribbon");
-+        assert_eq!(h.state().ui.tab, "Insert");
-+
-+        h.run_steps(40);
-+        let home = h.get_by_label("Home").rect().center();
-+        double_click_at(&mut h, home);
-+        assert!(h.state().ui.ribbon_collapsed, "double-clicking a tab when expanded collapses the ribbon");
-+        assert_eq!(h.state().ui.tab, "Home");
-+
-+        h.run_steps(40);
-+        double_click_at(&mut h, home);
-+        assert!(!h.state().ui.ribbon_collapsed, "double-clicking a collapsed tab leaves the ribbon open");
-+
-+        assert_eq!(h.state_mut().run("ui.collapseRibbon", json!({"value": false})).unwrap(), json!({"collapsed": false}));
-+        assert!(!h.state().ui.ribbon_collapsed);
-+        assert_eq!(h.state_mut().run("ui.collapseRibbon", json!({"value": true})).unwrap(), json!({"collapsed": true}));
-+        assert!(h.state().ui.ribbon_collapsed);
-+    }
++                        ui.add_space(4.0);
+                         // No document open (#1129): nothing to share, edit or comment on — but only
+                         // these buttons. Disabling the whole line took the tab strip with it: the
+                         // tabs took clicks that did nothing, so the empty window had no way back to
+@@ -327,10 +335,32 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
+                                     slide_underline(ui, tab, u, t.accent.gamma_multiply(entry), now, animate);
+                                 }
+                                 if resp.clicked() {
++                                    let id = ui.id().with("ribbon_expanded_on_click");
++                                    let was_collapsed = app.ui.ribbon_collapsed;
+                                     let _ = app.run("ui.tab", json!({"tab": tab}));
++                                    if was_collapsed && tab != "File" {
++                                        let _ = app.run("ui.collapseRibbon", json!({"value": false}));
++                                        let now = ui.ctx().input(|i| i.time);
++                                        ui.ctx().data_mut(|d| d.insert_temp(id, (tab.to_string(), now)));
++                                    } else if !was_collapsed && !resp.double_clicked() {
++                                        ui.ctx().data_mut(|d| d.remove::<(String, f64)>(id));
++                                    }
+                                 }
+                                 if resp.double_clicked() && tab != "File" {
+-                                    let _ = app.run("ui.collapseRibbon", json!({}));
++                                    let id = ui.id().with("ribbon_expanded_on_click");
++                                    let now = ui.ctx().input(|i| i.time);
++                                    let just_expanded = ui.ctx().data_mut(|d| {
++                                        let prev: Option<(String, f64)> = d.get_temp(id);
++                                        if prev.as_ref().is_some_and(|(t_tab, t)| t_tab == tab && now - t < 0.6) {
++                                            d.remove::<(String, f64)>(id);
++                                            true
++                                        } else {
++                                            false
++                                        }
++                                    });
++                                    if !just_expanded {
++                                        let _ = app.run("ui.collapseRibbon", json!({}));
++                                    }
+                                 }
+                                 if ghost.is_none() {
+                                     resp.context_menu(|ui| crate::widgets::customize_menu_items(ui, app));
+@@ -370,6 +400,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
+                                     for (tab, shown) in left_out {
+                                         if ui.selectable_label(app.ui.tab == tab, shown).clicked() {
+                                             let _ = app.run("ui.tab", json!({"tab": tab}));
++                                            if app.ui.ribbon_collapsed && tab != "File" {
++                                                let _ = app.run("ui.collapseRibbon", json!({"value": false}));
++                                            }
+                                             ui.close();
+                                         }
+                                     }
+diff --git a/crates/ui-egui/src/ribbon/tests.rs b/crates/ui-egui/src/ribbon/tests.rs
+index 61e4463..7445688 100644
+--- a/crates/ui-egui/src/ribbon/tests.rs
++++ b/crates/ui-egui/src/ribbon/tests.rs
+@@ -1092,3 +1092,67 @@ fn shape_and_chart_formats_leave_out_of_range_sizes_alone() {
+     assert_eq!(before.0, Some((20.0, 2500.0)));
+     assert_eq!(shown(a), before, "Chart Design shown, the chart untouched");
  }
-diff --git a/crates/ui-egui/src/widgets.rs b/crates/ui-egui/src/widgets.rs
-index 3246a0a..9f06fb5 100644
---- a/crates/ui-egui/src/widgets.rs
-+++ b/crates/ui-egui/src/widgets.rs
-@@ -406,8 +406,14 @@ pub fn command_menu(resp: &Response, app: &mut WordApp, id: &str) {
++
++#[test]
++fn collapsed_ribbon_opens_from_toggle_button_and_tab_click() {
++    use egui_kittest::kittest::Queryable;
++    let mut app = WordApp::new(Session::new(wordcraft_engine::sample::sample_document()), crate::Services::default());
++    app.ui.ribbon_collapsed = true;
++    let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
++        |ui, app: &mut WordApp| {
++            let ctx = ui.ctx().clone();
++            app.logic(&ctx);
++            app.ui(ui);
++        },
++        app,
++    );
++    let double_click_at = |h: &mut egui_kittest::Harness<'_, WordApp>, pos: egui::Pos2| {
++        let click = |h: &mut egui_kittest::Harness<'_, WordApp>, pressed: bool| {
++            h.event(egui::Event::PointerButton {
++                pos,
++                button: egui::PointerButton::Primary,
++                pressed,
++                modifiers: egui::Modifiers::NONE,
++            });
++        };
++        h.event(egui::Event::PointerMoved(pos));
++        h.step();
++        click(h, true);
++        h.step();
++        click(h, false);
++        h.step();
++        click(h, true);
++        h.step();
++        click(h, false);
++        h.run_steps(2);
++    };
++    h.run_steps(2);
++    assert!(h.state().ui.ribbon_collapsed);
++    h.get_by_label("Show Ribbon").click();
++    h.run_steps(2);
++    assert!(!h.state().ui.ribbon_collapsed, "clicking Show Ribbon expands the toolbar");
++
++    h.get_by_label("Collapse the Ribbon").click();
++    h.run_steps(2);
++    assert!(h.state().ui.ribbon_collapsed, "clicking Collapse the Ribbon collapses it again");
++
++    h.get_by_label("Insert").click();
++    h.run_steps(2);
++    assert!(!h.state().ui.ribbon_collapsed, "single-clicking a tab when collapsed opens the ribbon");
++    assert_eq!(h.state().ui.tab, "Insert");
++
++    h.run_steps(40);
++    let home = h.get_by_label("Home").rect().center();
++    double_click_at(&mut h, home);
++    assert!(h.state().ui.ribbon_collapsed, "double-clicking a tab when expanded collapses the ribbon");
++    assert_eq!(h.state().ui.tab, "Home");
++
++    h.run_steps(40);
++    double_click_at(&mut h, home);
++    assert!(!h.state().ui.ribbon_collapsed, "double-clicking a collapsed tab leaves the ribbon open");
++
++    assert_eq!(h.state_mut().run("ui.collapseRibbon", json!({"value": false})).unwrap(), json!({"collapsed": false}));
++    assert!(!h.state().ui.ribbon_collapsed);
++    assert_eq!(h.state_mut().run("ui.collapseRibbon", json!({"value": true})).unwrap(), json!({"collapsed": true}));
++    assert!(h.state().ui.ribbon_collapsed);
++}
+diff --git a/crates/ui-egui/src/widgets/groups.rs b/crates/ui-egui/src/widgets/groups.rs
+index 9ea90b7..35b32e0 100644
+--- a/crates/ui-egui/src/widgets/groups.rs
++++ b/crates/ui-egui/src/widgets/groups.rs
+@@ -258,9 +258,15 @@ pub fn command_menu(resp: &Response, app: &mut WordApp, id: &str) {
      });
  }
  
--/// "Customize the Ribbon…" and "Customize Quick Access Toolbar…" (context menus).
-+/// "Show/Collapse the Ribbon", "Customize the Ribbon…", and "Customize Quick Access Toolbar…" (context menus).
+-/// "Customize the Ribbon…" and "Customize Quick Access Toolbar…" (context menus), and "Show
+-/// Quick Access Toolbar" while the toolbar is hidden (#1945).
++/// "Show/Collapse the Ribbon", "Customize the Ribbon…", and "Customize Quick Access Toolbar…"
++/// (context menus), and "Show Quick Access Toolbar" while the toolbar is hidden (#1945).
  pub fn customize_menu_items(ui: &mut Ui, app: &mut WordApp) {
 +    let toggle_label = if app.ui.ribbon_collapsed { tl!("Show the Ribbon") } else { tl!("Collapse the Ribbon") };
 +    if ui.button(toggle_label).clicked() {
@@ -386,6 +436,6 @@ index 3246a0a..9f06fb5 100644
 +        ui.close();
 +    }
 +    ui.separator();
-     if ui.button(tl!("Customize the Ribbon…")).clicked() {
-         crate::dialogs_ribbon::open(app, crate::dialogs_ribbon::Page::Ribbon);
+     if !app.ui.quick_access_toolbar && ui.button(tl!("Show Quick Access Toolbar")).clicked() {
+         let _ = app.run("ui.quickAccessToolbar", serde_json::json!({"value": true}));
          ui.close();
