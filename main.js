@@ -2525,12 +2525,6 @@ async function init() {
     editingToggle.checked = editingEnabled;
     editingToggle.addEventListener('change', () => changeDocumentEditing(refs, editingToggle.checked));
   }
-  document.querySelectorAll('[data-open-editing-settings]').forEach(button => {
-    button.addEventListener('click', () => {
-      openSettingsModal(refs);
-      editingToggle?.focus();
-    });
-  });
 
   const versionLink = document.querySelector('[data-version-link]');
   versionLink?.addEventListener('click', async event => {
