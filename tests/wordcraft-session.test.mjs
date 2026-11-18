@@ -125,6 +125,55 @@ test('rapid A → resume → B opens serialize and keep draft keys isolated', as
   }
 });
 
+test('a superseded open never loads bytes after draft storage responds', async () => {
+  const store = await createDocumentStore();
+  const readStarted = deferred();
+  const releaseRead = deferred();
+  const getDraft = store.getDraft.bind(store);
+  store.getDraft = async key => {
+    if (key === draftKeyFor('old')) {
+      readStarted.resolve();
+      await releaseRead.promise;
+    }
+    return getDraft(key);
+  };
+  const mock = mockBridge();
+  const session = createWordcraftSession({ bridge: mock.bridge, store });
+  let current = true;
+  const opening = session.open(binding('old', 'old source'), () => current);
+  await readStarted.promise;
+  current = false;
+  const latest = session.open(binding('new', 'new source'));
+  releaseRead.resolve();
+  assert.equal(await opening, false);
+  assert.equal(await latest, true);
+  assert.deepEqual(mock.loads.map(load => load.text), ['new source']);
+});
+
+test('a superseded clear saves dirty edits and keeps the active binding', async () => {
+  const store = await createDocumentStore();
+  const ackStarted = deferred();
+  const releaseAck = deferred();
+  const mock = mockBridge({
+    async beforeAck() {
+      ackStarted.resolve();
+      await releaseAck.promise;
+    }
+  });
+  const session = createWordcraftSession({ bridge: mock.bridge, store });
+  await session.open(binding('job', 'source'));
+  mock.setState({ ...mock.getState(), revision: 2, dirty: true });
+  let current = true;
+  const clearing = session.clear(() => current);
+  await ackStarted.promise;
+  current = false;
+  releaseAck.resolve();
+  assert.equal(await clearing, false);
+  assert.equal(session.getActiveBinding().key, 'job');
+  assert.equal(session.getActiveBinding().savedRevision, 2);
+  assert.ok(await store.getDraft(draftKeyFor('job')));
+});
+
 test('autosave stores a draft and a new session reloads it for the same source hash', async () => {
   const store = await createDocumentStore();
   const source = binding('base:source', 'original letter');

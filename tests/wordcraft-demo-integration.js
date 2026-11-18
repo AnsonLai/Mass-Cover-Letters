@@ -14,4 +14,4 @@ if (!await store.getJson('session:state')) {
   }
   await store.putJson('session:state', { baseDocument: { fileName: 'sample-base.docx' }, resumeDocument: { fileName: 'sample-resume.docx' }, jobs, selectedJobId: 'a', previewType: 'coverLetter', sampleDocuments: [] });
 }
-await import('../main.js?v=2026-10-12-drafts-final');
+await import('../main.js?v=2026-11-10-state-ownership');

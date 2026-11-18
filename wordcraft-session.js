@@ -43,23 +43,36 @@ export function createWordcraftSession({ bridge, store, onStatus = () => {} }) {
         catch (error) { onStatus('error', error); throw error; }
       });
     },
-    open(binding) {
+    open(binding, isCurrent = () => true) {
       return serialize(async () => {
+        if (!isCurrent()) return false;
         try {
           await flushCurrent({ settle: true, allowCleanExternal: true });
           const sourceHash = await sourceFingerprint(store, binding.key, binding.sourceBlob);
+          if (!isCurrent()) return false;
           if (active?.key === binding.key && active.sourceHash === sourceHash) {
             active.jobId = binding.jobId;
             active.previewType = binding.previewType;
-            return;
+            return true;
           }
           const blob = await readDraftBlob(store, binding.key, binding.sourceBlob);
-          const loaded = await bridge.load(binding.filename, new Uint8Array(await blob.arrayBuffer()));
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          if (!isCurrent()) return false;
+          const loaded = await bridge.load(binding.filename, bytes);
           active = { ...binding, sourceHash, savedRevision: loaded.revision, documentId: loaded.documentId };
           onStatus('ready');
+          return true;
         } catch (error) { onStatus('error', error); throw error; }
       });
     },
-    clear() { return serialize(async () => { await flushCurrent({ settle: true }); active = null; }); }
+    clear(isCurrent = () => true) {
+      return serialize(async () => {
+        if (!isCurrent()) return false;
+        await flushCurrent({ settle: true });
+        if (!isCurrent()) return false;
+        active = null;
+        return true;
+      });
+    }
   };
 }

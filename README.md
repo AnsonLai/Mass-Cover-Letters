@@ -46,11 +46,13 @@ Then open `http://localhost:8002`.
 
 ## V2 secondary trial
 
-The standard experience stays at `index.html`. The optional editable WordCraft beta lives at `wordcraft-demo.html`; notices in both headers link between them. Returning from beta saves the active editor first. Both versions use the same browser session, while manual WordCraft edits remain separate drafts used by beta exports.
+The main tool at `index.html` starts with the lightweight preview. Power users can enable **Settings → Document preview → Enable document editing (beta)**. Only then, when a document opens, does the app download WordCraft's roughly 39 MB WebAssembly editor. The preference saves in this browser. Turning editing off saves the active document and removes the editor; saved manual changes remain visible in the lightweight preview and are included in individual and bulk exports. The existing `wordcraft-demo.html` URL remains available with the same setting.
 
-Deploy the checked-in `vendor/wordcraft/` bundle alongside the app. It includes the patched editor and its approximately 39 MB WebAssembly file; the standard page does not load that editor. The patch and native build script are in `vendor/wordcraft-patches/` and `scripts/build-wordcraft.ps1`. Do not replace the patched bundle with the stock release: it lacks the draft-saving bridge.
+Deploy the checked-in `vendor/wordcraft/` bundle alongside the app. It includes the patched editor and its approximately 39 MB WebAssembly file; the default lightweight mode does not load that editor. The patch and native build script are in `vendor/wordcraft-patches/` and `scripts/build-wordcraft.ps1`. Do not replace the patched bundle with the stock release: it lacks the draft-saving bridge.
 
-Before publishing, verify both switch links on the hosted subpath and confirm the editor's JavaScript and WebAssembly assets load successfully. Browser integration instructions are in `tests/wordcraft-demo-integration.md`.
+Autosave waits for about 900 ms of idle typing, with a five-second maximum wait during continuous typing. Switching documents, disabling editing, and exporting force a save. Closing or reloading the page while editor changes are pending triggers the browser’s leave-page warning; the app does not rely on an asynchronous save during unload. Tailoring reuses source paragraph inspection across jobs, detects changed source bytes, and gives every job its own mutable document so concurrent jobs cannot affect each other.
+
+Before publishing, verify the editing toggle on the hosted subpath and confirm the editor's JavaScript and WebAssembly assets load only when needed. Browser integration instructions are in `tests/wordcraft-demo-integration.md`.
 
 ## Notes
 

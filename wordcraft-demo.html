@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-preview-engine="wordcraft">
+<html lang="en">
 
 <head>
   <meta charset="utf-8" />
@@ -15,7 +15,7 @@
       } catch (e) { /* ignore */ }
     })();
   </script>
-  <title>Application Station | V2 Beta</title>
+  <title>Application Station | Optional Document Editing</title>
   <meta name="description"
     content="Application Station helps job seekers generate tailored cover letters and resumes from DOCX files using AI. Upload one base letter, add job descriptions, and export customized applications faster." />
   <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
@@ -69,39 +69,7 @@
     href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap"
     rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.css" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=2026-10-12-v2-trial" />
-  <style>
-    html[data-preview-engine="wordcraft"] #previewHost.wordcraft-preview-host {
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      padding: 0;
-      overflow: hidden;
-    }
-
-    html[data-preview-engine="wordcraft"] #previewHost > iframe {
-      display: block;
-      flex: 1 1 auto;
-      width: 100%;
-      height: 100%;
-      min-height: 0;
-      border: 0;
-    }
-    .wordcraft-export-note {
-      margin: 0;
-      padding: 6px 12px;
-      font-size: 12px;
-      color: var(--muted);
-      background: var(--surface);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      flex: 0 0 auto;
-    }
-    .wordcraft-export-note[data-level="error"] { color: var(--danger, #b42318); }
-    .wordcraft-export-note button { padding: 4px 8px; font-size: 12px; }
-  </style>
+  <link rel="stylesheet" href="./styles.css?v=2026-10-12-opt-in-editor" />
 </head>
 
 <body>
@@ -122,9 +90,9 @@
         </div>
       </div>
 
-      <aside class="version-notice" aria-label="V2 beta experience">
-        <span><strong>You’re trying V2 beta</strong> — prefer the standard experience?</span>
-        <a href="./index.html" data-version-link>Back to standard →</a>
+      <aside class="version-notice" aria-label="Optional document editing">
+        <span><strong>Document editing is optional</strong> — enable it in Settings.</span>
+        <a href="./index.html" data-version-link>Main tool →</a>
       </aside>
 
       <div class="top-controls">
@@ -385,6 +353,15 @@
         </label>
       </div>
 
+      <div class="settings-section">
+        <h3 class="settings-section-title">Document preview</h3>
+        <label class="settings-checkbox-row" for="documentEditingToggle">
+          <input id="documentEditingToggle" type="checkbox" aria-describedby="documentEditingHelp" />
+          <span>Enable document editing (beta)</span>
+        </label>
+        <p id="documentEditingHelp" class="settings-helper">Use the lightweight preview by default. Turn this on for typing and formatting in your documents. Downloads the editor (about 39 MB) when you open a document; your browser may cache it for next time. Turning it off keeps your saved edits in previews and exports.</p>
+      </div>
+
       <details class="settings-section settings-prompt-guidance">
         <summary>Additional instructions</summary>
         <label class="field-label" for="promptGuidanceInput">Your tailoring preferences</label>
@@ -463,7 +440,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="./mascot.js?v=2026-07-12-1"></script>
-  <script type="module" src="./main.js?v=2026-10-12-v2-trial"></script>
+  <script type="module" src="./main.js?v=2026-11-10-state-ownership"></script>
 </body>
 
 </html>

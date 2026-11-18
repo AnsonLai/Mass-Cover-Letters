@@ -1,7 +1,8 @@
 <!doctype html>
-<html lang="en" data-preview-engine="wordcraft" data-document-store="wordcraft-integration-tests-2026-10-12">
+<html lang="en" data-document-store="wordcraft-integration-tests-2026-10-12">
 
-<head><base href="/">
+<head>
+  <base href="/" />
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>
@@ -15,7 +16,7 @@
       } catch (e) { /* ignore */ }
     })();
   </script>
-  <title>Application Station | WordCraft Preview Demo</title>
+  <title>Application Station | AI Cover Letter Generator & Resume Tailoring Tool</title>
   <meta name="description"
     content="Application Station helps job seekers generate tailored cover letters and resumes from DOCX files using AI. Upload one base letter, add job descriptions, and export customized applications faster." />
   <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
@@ -69,39 +70,7 @@
     href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap"
     rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.css" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=2026-10-12-quill-collapse" />
-  <style>
-    html[data-preview-engine="wordcraft"] #previewHost.wordcraft-preview-host {
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      padding: 0;
-      overflow: hidden;
-    }
-
-    html[data-preview-engine="wordcraft"] #previewHost > iframe {
-      display: block;
-      flex: 1 1 auto;
-      width: 100%;
-      height: 100%;
-      min-height: 0;
-      border: 0;
-    }
-    .wordcraft-export-note {
-      margin: 0;
-      padding: 6px 12px;
-      font-size: 12px;
-      color: var(--muted);
-      background: var(--surface);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      flex: 0 0 auto;
-    }
-    .wordcraft-export-note[data-level="error"] { color: var(--danger, #b42318); }
-    .wordcraft-export-note button { padding: 4px 8px; font-size: 12px; }
-  </style>
+  <link rel="stylesheet" href="./styles.css?v=2026-10-12-opt-in-editor" />
 </head>
 
 <body>
@@ -121,6 +90,11 @@
           <p>Tailor one base letter to many roles</p>
         </div>
       </div>
+
+      <aside class="version-notice" aria-label="Optional document editing">
+        <span><strong>Optional document editing</strong> — for hands-on changes to your applications.</span>
+        <button type="button" data-open-editing-settings>Editing settings →</button>
+      </aside>
 
       <div class="top-controls">
         <div class="split-action run-primary">
@@ -380,6 +354,15 @@
         </label>
       </div>
 
+      <div class="settings-section">
+        <h3 class="settings-section-title">Document preview</h3>
+        <label class="settings-checkbox-row" for="documentEditingToggle">
+          <input id="documentEditingToggle" type="checkbox" aria-describedby="documentEditingHelp" />
+          <span>Enable document editing (beta)</span>
+        </label>
+        <p id="documentEditingHelp" class="settings-helper">Use the lightweight preview by default. Turn this on for typing and formatting in your documents. Downloads the editor (about 39 MB) when you open a document; your browser may cache it for next time. Turning it off keeps your saved edits in previews and exports.</p>
+      </div>
+
       <details class="settings-section settings-prompt-guidance">
         <summary>Additional instructions</summary>
         <label class="field-label" for="promptGuidanceInput">Your tailoring preferences</label>
@@ -458,7 +441,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="./mascot.js?v=2026-07-12-1"></script>
-  <script type="module" src="./tests/wordcraft-demo-integration.js?v=final"></script>
+  <script type="module" src="./tests/wordcraft-demo-integration.js?v=opt-in-editor"></script>
 </body>
 
 </html>

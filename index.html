@@ -69,7 +69,7 @@
     href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap"
     rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.css" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=2026-10-12-v2-trial" />
+  <link rel="stylesheet" href="./styles.css?v=2026-10-12-opt-in-editor" />
 </head>
 
 <body>
@@ -90,9 +90,9 @@
         </div>
       </div>
 
-      <aside class="version-notice" aria-label="V2 testing available">
-        <span><strong>V2 testing is available</strong> — try the editable document preview.</span>
-        <a href="./wordcraft-demo.html" data-version-link>Try V2 beta →</a>
+      <aside class="version-notice" aria-label="Optional document editing">
+        <span><strong>Optional document editing</strong> — for hands-on changes to your applications.</span>
+        <button type="button" data-open-editing-settings>Editing settings →</button>
       </aside>
 
       <div class="top-controls">
@@ -353,6 +353,15 @@
         </label>
       </div>
 
+      <div class="settings-section">
+        <h3 class="settings-section-title">Document preview</h3>
+        <label class="settings-checkbox-row" for="documentEditingToggle">
+          <input id="documentEditingToggle" type="checkbox" aria-describedby="documentEditingHelp" />
+          <span>Enable document editing (beta)</span>
+        </label>
+        <p id="documentEditingHelp" class="settings-helper">Use the lightweight preview by default. Turn this on for typing and formatting in your documents. Downloads the editor (about 39 MB) when you open a document; your browser may cache it for next time. Turning it off keeps your saved edits in previews and exports.</p>
+      </div>
+
       <details class="settings-section settings-prompt-guidance">
         <summary>Additional instructions</summary>
         <label class="field-label" for="promptGuidanceInput">Your tailoring preferences</label>
@@ -431,7 +440,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="./mascot.js?v=2026-07-12-1"></script>
-  <script type="module" src="./main.js?v=2026-10-12-v2-trial"></script>
+  <script type="module" src="./main.js?v=2026-11-10-state-ownership"></script>
 </body>
 
 </html>

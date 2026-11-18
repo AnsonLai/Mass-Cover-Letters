@@ -4,9 +4,8 @@ Use the [state machine audit](frontend-state-audit.md) as the inventory. For eac
 
 ## Status
 
-- **Complete:** All five isolated fixes in phase 1, with browser smoke coverage on both pages and an automated archive regression test.
-- **Next:** Reproduce duplicate generation starts and premature batch cleanup with controlled promises. Check how many runs actually start and when editing resumes.
-- **Pending:** Preview and API-key ownership, mutations during generation, and failure-injection checks for results and drafts.
+- **Complete:** Phase 1's five isolated fixes and phase 2's generation, preview, key validation, and generation-time mutation fixes.
+- **Next:** Inject result and draft write failures and decide how the last committed result should behave after a failed rerun.
 
 ## 1. Isolated fixes completed
 
@@ -22,12 +21,14 @@ All five fixes are implemented. Headless Chrome smoke checks passed on both entr
 
 Use `node --test tests/*.test.mjs` and `node tests/run-tests.mjs` after each change. Add focused automated coverage where existing tests miss the regression, especially archive contents. Use the documented [browser integration harness](tests/wordcraft-demo-integration.md) for UI transitions it can exercise, and record manual steps for the rest.
 
-## 2. Reproduce higher-impact races with controlled ordering
+## 2. Controlled race fixes completed
 
-1. **Generation ownership.** Delay editor flush, start Generate and Generate All, then release the flush. Count jobs and mocked requests. Reject a batch worker while a sibling is pending. Fix only if reproduction shows duplicate starts or early cleanup. Assert one owner from the first await until all claimed workers settle.
-2. **Preview ownership.** Delay one render, select another job or tab, then release renders in reverse order. Check visible content, label, and WordCraft binding. Exercise both engines and an empty target. Assert that only the latest target commits visible content.
-3. **Key validation ownership.** Hold A's response, save or clear B, and then resolve A. Inspect the input, saved key, validation marker, and displayed status. Assert that obsolete responses cannot commit. Mock model switches and failed revalidation.
-4. **Deletion, uploads, and generation settings.** Pause a run during preparation and application. Exercise Clear Applications, source replacement, and mode changes separately. Verify that removed jobs do not reappear as orphaned results and that each attempt uses one coherent input snapshot. Keep policy decisions such as whether new jobs join an active batch explicit.
+1. **Generation ownership.** The previous commit started two requests for a single job when Generate and Generate All fired together. It also unlocked the UI on a worker rejection while a sibling was pending. The fix reserves the run before its first await and waits for all claimed work to settle. Chrome checks counted requests and verified editor inertness during a held save and through cleanup.
+2. **Preview ownership.** Finishing an older standard render after a newer one previously overwrote the visible content. Standard previews now render offscreen and publish only the latest result. WordCraft serializes host changes and drops superseded loads or clears before committing them where the bridge still permits it. Chrome verified selection after a held editor save, opening an empty target, and reopening a document. Node tests cover stale open after a held draft read and stale clear after a held save acknowledgment.
+3. **Key validation ownership.** A stale validation previously overwrote a subsequently saved key. Only the current request can now commit validation status. Chrome verified out-of-order saves, clearing while pending, failed revalidation, and changing models mid-request.
+4. **Generation inputs and document mutations.** Each run uses a fixed job list, source documents, and settings snapshot. Uploads, removals, and result mutations are blocked while generation owns the app. New jobs can be added and stay queued for the next run. Chrome checked Clear Applications, a source upload, a mode change, and an addition while a batch was waiting for mocked responses.
+
+The controlled Chrome checks passed on both entry pages with synthetic documents and mocked Gemini, the standard renderer, and the WordCraft bridge. The Node suite passed 89 tests and the standalone runner passed. Cross-tab and interrupted-write behavior remain in phase 3.
 
 ## 3. Resolve result and draft consistency before changing storage
 
